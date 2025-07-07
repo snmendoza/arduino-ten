@@ -3,6 +3,7 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <vector>
+#include "ClimbingWallHelper.h"
 
 #define DISPLAY_NAME "Tension Board 2"
 #define API_LEVEL 3
@@ -28,34 +29,6 @@ struct Hold {
     uint8_t r, g, b;
     String colorName;
 };
-
-// Helper function to decode RGB color from API level 3 format
-void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
-    r = ((colorByte >> 5) & 0x07) * 255 / 7;  // 3 bits for red
-    g = ((colorByte >> 2) & 0x07) * 255 / 7;  // 3 bits for green
-    b = (colorByte & 0x03) * 255 / 3;         // 2 bits for blue
-}
-
-// Helper function to get color name
-String getColorName(uint8_t r, uint8_t g, uint8_t b) {
-    if (r > 200 && g < 50 && b < 50) return "Red";
-    if (r < 50 && g > 200 && b < 50) return "Green";
-    if (r < 50 && g < 50 && b > 200) return "Blue";
-    if (r > 200 && g < 50 && b > 200) return "Pink";
-    if (r > 200 && g > 200 && b < 50) return "Yellow";
-    if (r > 200 && g > 200 && b > 200) return "White";
-    if (r < 50 && g < 50 && b < 50) return "Black";
-    return "Unknown";
-}
-
-// Helper function to calculate checksum
-uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
-    uint8_t sum = 0;
-    for (uint8_t byte : data) {
-        sum = (sum + byte) & 255;
-    }
-    return (~sum) & 255;
-}
 
 class ServerCallbacks: public BLEServerCallbacks {
     void onConnect(BLEServer* pServer) {
@@ -140,7 +113,7 @@ class CharacteristicCallbacks: public BLECharacteristicCallbacks {
             for (size_t i = startIdx + 4; i < startIdx + length + 3; i++) {
                 dataBytes.push_back(packetBuffer[i]);
             }
-            uint8_t calculatedChecksum = calculateChecksum(dataBytes);
+            uint8_t calculatedChecksum = ClimbingWallHelper::calculateChecksum(dataBytes);
             uint8_t receivedChecksum = packetBuffer[startIdx + 2];
             
             Serial.println("\nDecoded packet:");
@@ -153,9 +126,21 @@ class CharacteristicCallbacks: public BLECharacteristicCallbacks {
             for (size_t i = startIdx + 5; i < startIdx + length + 3; i += 3) {
                 if (i + 2 < packetBuffer.size()) {
                     uint16_t position = (packetBuffer[i+1] << 8) + packetBuffer[i];
+                    
+                    // Map the position to our wall's layout
+                    position = ClimbingWallHelper::mapHoldPosition(position);
+                    
+                    if (!ClimbingWallHelper::isValidHoldPosition(position)) {
+                        continue;  // Skip invalid positions
+                    }
+                    
                     uint8_t r, g, b;
-                    decodeColor(packetBuffer[i+2], r, g, b);
-                    String colorName = getColorName(r, g, b);
+                    ClimbingWallHelper::decodeColor(packetBuffer[i+2], r, g, b);
+                    
+                    // Adjust brightness if needed
+                    ClimbingWallHelper::adjustBrightness(r, g, b, 200);  // Example: 80% brightness
+                    
+                    String colorName = ClimbingWallHelper::getColorName(r, g, b);
                     
                     // Add to current holds
                     Hold h = {position, r, g, b, colorName};
@@ -170,13 +155,24 @@ class CharacteristicCallbacks: public BLECharacteristicCallbacks {
                 }
             }
             
-            // If this is the last packet (S or T), print summary
+            // If this is the last packet (S or T), process the complete climb
             if (packetTypeChar == 'S' || packetTypeChar == 'T') {
                 Serial.println("\nComplete climb summary:");
                 for (const Hold& h : currentHolds) {
                     Serial.print("Position "); Serial.print(h.position);
                     Serial.print(": "); Serial.println(h.colorName);
                 }
+                
+                // Add the climb to the next available bucket
+                ClimbingWallHelper::addNewClimb(currentHolds);
+                
+                // Get all active holds from both buckets and update the LEDs
+                std::vector<Hold> activeHolds = ClimbingWallHelper::getActiveBucketHolds();
+                
+                // TODO: Update your LED strip/matrix with the activeHolds
+                // This will depend on your specific LED hardware setup
+                updateLEDs(activeHolds);
+                
                 Serial.println();
             }
             
@@ -191,6 +187,18 @@ class CharacteristicCallbacks: public BLECharacteristicCallbacks {
         }
       }
     }
+
+    void updateLEDs(const std::vector<Hold>& holds) {
+        // TODO: Implement this based on your LED hardware
+        // This function should update your physical LEDs with the hold positions and colors
+        for (const Hold& hold : holds) {
+            Serial.print("Updating LED at position "); Serial.print(hold.position);
+            Serial.print(" with RGB("); Serial.print(hold.r);
+            Serial.print(","); Serial.print(hold.g);
+            Serial.print(","); Serial.print(hold.b);
+            Serial.println(")");
+        }
+    }
 };
 
 void setup() {
@@ -200,6 +208,13 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, HIGH);  // Turn on LED to indicate power
 
+  // Initialize the bucket system
+  ClimbingWallHelper::initializeBuckets();
+  
+  // Set LED offset for your specific board size
+  // Example: If you want all LEDs shifted by 50 positions
+  ClimbingWallHelper::setLEDOffset(50);  // Adjust this value for your setup
+  
   // Send initial API level
   Serial.write(4);
   Serial.write(API_LEVEL);
