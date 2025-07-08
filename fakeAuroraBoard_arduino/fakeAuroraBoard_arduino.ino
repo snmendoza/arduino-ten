@@ -47,7 +47,7 @@
 #define DATA_TRANSFER_CHARACTERISTIC "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"  // Write characteristic
 #define NOTIFY_CHARACTERISTIC "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  // Notify characteristic
 
-#define LED_PIN 13  // LED pin to connect RGB led string to (ws8211)
+#define LED_PIN 25  // LED pin to connect RGB led string to (ws2811)
 #define NUM_LEDS 500  // Replace with the number of LEDs in your strip
 #define DELAY_TIME 10  // Delay between LED movements (in milliseconds)
 
