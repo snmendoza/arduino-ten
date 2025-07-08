@@ -5,6 +5,36 @@
 #include <vector>
 #include <FastLED.h>
 
+/*
+ * FAKE AURORA BOARD - ESP32 Climbing Training Board Simulator
+ * ============================================================
+ * 
+ * PURPOSE: Simulates an Aurora Board climbing training device using ESP32 + LED strip
+ * 
+ * HARDWARE: 
+ * - ESP32 with BLE capability
+ * - WS2811 LED strip (500 LEDs on pin 13)
+ * - Each LED represents a climbing hold position (0-499)
+ * 
+ * COMMUNICATION:
+ * - BLE peripheral device advertising as "Tension Board 2@3"
+ * - Implements Aurora Board protocol (API Level 3)
+ * - Uses Nordic UART Service UUIDs for data transfer
+ * 
+ * FUNCTIONALITY:
+ * - Receives climbing route data via BLE packets
+ * - Displays routes as colored LEDs on strip
+ * - Two modes: Basic (single route) or Dual (two routes simultaneously)
+ * - Dual mode uses green-biased colors for route differentiation
+ * 
+ * DATA FORMAT:
+ * - Packets: [START][LENGTH][CHECKSUM][TYPE_MARKER][PACKET_TYPE][HOLD_DATA...][END]
+ * - Hold data: 3 bytes per hold (position_low, position_high, color_encoded)
+ * - Colors: 8-bit compressed RGB (3R:3G:2B bits)
+ * 
+ * USE CASE: Indoor climbing training with app-controlled route lighting
+ */
+
 #define DISPLAY_NAME "Tension Board 2"
 #define API_LEVEL 3
 
@@ -20,6 +50,14 @@
 #define LED_PIN 13  // LED pin to connect RGB led string to (ws8211)
 #define NUM_LEDS 500  // Replace with the number of LEDs in your strip
 #define DELAY_TIME 10  // Delay between LED movements (in milliseconds)
+
+// Structure to store hold information
+struct Hold {
+    uint16_t position;
+    uint8_t r, g, b;
+    String colorName;
+};
+
 CRGB leds[NUM_LEDS];
 
 BLEServer* pServer = nullptr;
@@ -36,13 +74,6 @@ std::vector<Hold> route2Holds;     // Second route storage
 #else
 std::vector<Hold> currentHolds;    // Single route storage
 #endif
-
-// Structure to store hold information
-struct Hold {
-    uint16_t position;
-    uint8_t r, g, b;
-    String colorName;
-};
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -190,11 +221,9 @@ class ServerCallbacks: public BLEServerCallbacks {
 class CharacteristicCallbacks: public BLECharacteristicCallbacks {
     private:
         // State management for climbing routes
-        #if DUAL_ROUTE_MODE
         std::vector<Hold> tempHolds;       // Temporary storage for incoming route
+        #if DUAL_ROUTE_MODE
         bool activeRoute = true;           // true = route1, false = route2
-        #else
-        // Uses global currentHolds for single route mode
         #endif
         
         bool isNewClimb = true;            // Flag to track if this is a new climb sequence
@@ -364,13 +393,17 @@ class CharacteristicCallbacks: public BLECharacteristicCallbacks {
                 Serial.println("========================");
                 
                 #else
-                // Basic mode: Single route handling
+                // Basic mode: Store route from tempHolds to currentHolds
+                currentHolds = tempHolds;
                 Serial.println("\nComplete climb summary:");
                 for (const Hold& h : currentHolds) {
                     Serial.print("Position "); Serial.print(h.position);
                     Serial.print(": "); Serial.println(h.colorName);
                 }
                 #endif
+                
+                // Clear temporary storage for next route
+                tempHolds.clear();
                 
                 // Update LED display with new route data
                 updateLEDDisplay();
@@ -403,8 +436,8 @@ void setup() {
   Serial.write(4);
   Serial.write(API_LEVEL);
 
-  char boardName[2 + sizeof(DISPLAY_NAME)];
-  snprintf(boardName, sizeof(boardName), "%s%s%d", DISPLAY_NAME, "@", API_LEVEL);
+  char boardName[64];  // Increased buffer size for safety
+  snprintf(boardName, sizeof(boardName), "%s@%d", DISPLAY_NAME, API_LEVEL);
 
   Serial.println("Initializing BLE...");
   Serial.println("Using UUIDs:");
