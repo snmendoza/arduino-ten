@@ -330,7 +330,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     #if DUAL_ROUTE_MODE
                     tempHolds.push_back(h);
                     #else
-                    currentHolds.push_back(h);
+                    tempHolds.push_back(h);
                     #endif
                     
                     // Debug output: Show decoded hold
