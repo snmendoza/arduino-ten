@@ -39,6 +39,9 @@
 // Feature toggle: Set to true for dual-route functionality, false for basic single-route mode
 #define DUAL_ROUTE_MODE true
 
+// Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
+#define CONTINUOUS_ADVERTISING true
+
 // Aurora Board protocol UUIDs
 #define ADVERTISING_SERVICE_UUID "4488B571-7806-4DF6-BCFF-A2897E4953FF"  // Aurora Board advertising service
 #define DATA_TRANSFER_SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"  // Nordic UART Service
@@ -327,12 +330,24 @@ void onBLEConnected(BLEDevice central) {
     deviceConnected = true;
     Serial.print("Device connected: ");
     Serial.println(central.address());
+    
+    #if CONTINUOUS_ADVERTISING
+    // Continue advertising to allow immediate device switching
+    BLE.advertise();
+    Serial.println("Ready for next user - staying visible for seamless handoff");
+    #endif
 }
+
+
 
 void onBLEDisconnected(BLEDevice central) {
     deviceConnected = false;
     Serial.print("Device disconnected: ");
     Serial.println(central.address());
+    
+    // Automatically restart advertising when device disconnects
+    BLE.advertise();
+    Serial.println("Resumed BLE advertising for new connections");
 }
 
 /*
