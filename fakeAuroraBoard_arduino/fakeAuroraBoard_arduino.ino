@@ -142,6 +142,132 @@ void displayRoute(const std::vector<Hold>& route) {
         }
     }
 }
+// on startup, show this sequence
+// smoothly cycles through spectrum colors equivalent to 400nm to 700nm, taking 5 seconds to complete
+// at each time step the entire board is a single color, slowly changing to the next
+// then reverse it and end on purple
+void startupLEDs() {
+    // Validate NUM_LEDS to prevent buffer overflow
+    if (NUM_LEDS <= 0) return;
+    
+    // Calculate number of steps needed for 5 second animation
+    const int totalSteps = 500; 
+    const int delayMs = 5;
+    const float startWavelength = 400.0;
+    const float endWavelength = 700.0;
+    const float wavelengthRange = endWavelength - startWavelength;
+    
+    // Cycle through visible spectrum wavelengths (400nm to 700nm)
+    for (int step = 0; step < totalSteps; step++) {
+        // Convert step to wavelength (400-700nm)
+        float wavelength = startWavelength + (step * wavelengthRange / totalSteps);
+        
+        // Convert wavelength to RGB using approximation
+        float r = 0.0, g = 0.0, b = 0.0;
+        
+        if (wavelength >= 400 && wavelength < 440) {
+            r = -(wavelength - 440) / (440 - 400);
+            g = 0.0;
+            b = 1.0;
+        } else if (wavelength >= 440 && wavelength < 490) {
+            r = 0.0;
+            g = (wavelength - 440) / (490 - 440);
+            b = 1.0;
+        } else if (wavelength >= 490 && wavelength < 510) {
+            r = 0.0;
+            g = 1.0;
+            b = -(wavelength - 510) / (510 - 490);
+        } else if (wavelength >= 510 && wavelength < 580) {
+            r = (wavelength - 510) / (580 - 510);
+            g = 1.0;
+            b = 0.0;
+        } else if (wavelength >= 580 && wavelength < 645) {
+            r = 1.0;
+            g = -(wavelength - 645) / (645 - 580);
+            b = 0.0;
+        } else if (wavelength >= 645 && wavelength <= 700) {
+            r = 1.0;
+            g = 0.0;
+            b = 0.0;
+        }
+        
+        // Ensure RGB values are in valid range [0,1]
+        r = constrain(r, 0.0, 1.0);
+        g = constrain(g, 0.0, 1.0);
+        b = constrain(b, 0.0, 1.0);
+        
+        // Scale RGB values to 0-255 range
+        uint8_t red = r * 255;
+        uint8_t green = g * 255; 
+        uint8_t blue = b * 255;
+        
+        // Set all LEDs to the same color
+        for (int i = 0; i < NUM_LEDS; i++) {
+            leds[i] = CRGB(red, green, blue);
+        }
+        FastLED.show();
+        delay(delayMs);
+    }
+    
+    // Reverse the sequence
+    for (int step = totalSteps - 1; step >= 0; step--) {
+        // Convert step to wavelength (400-700nm)
+        float wavelength = startWavelength + (step * wavelengthRange / totalSteps);
+        
+        // Convert wavelength to RGB using approximation
+        float r = 0.0, g = 0.0, b = 0.0;
+        
+        if (wavelength >= 400 && wavelength < 440) {
+            r = -(wavelength - 440) / (440 - 400);
+            g = 0.0;
+            b = 1.0;
+        } else if (wavelength >= 440 && wavelength < 490) {
+            r = 0.0;
+            g = (wavelength - 440) / (490 - 440);
+            b = 1.0;
+        } else if (wavelength >= 490 && wavelength < 510) {
+            r = 0.0;
+            g = 1.0;
+            b = -(wavelength - 510) / (510 - 490);
+        } else if (wavelength >= 510 && wavelength < 580) {
+            r = (wavelength - 510) / (580 - 510);
+            g = 1.0;
+            b = 0.0;
+        } else if (wavelength >= 580 && wavelength < 645) {
+            r = 1.0;
+            g = -(wavelength - 645) / (645 - 580);
+            b = 0.0;
+        } else if (wavelength >= 645 && wavelength <= 700) {
+            r = 1.0;
+            g = 0.0;
+            b = 0.0;
+        }
+        
+        // Ensure RGB values are in valid range [0,1]
+        r = constrain(r, 0.0, 1.0);
+        g = constrain(g, 0.0, 1.0);
+        b = constrain(b, 0.0, 1.0);
+        
+        // Scale RGB values to 0-255 range
+        uint8_t red = r * 255;
+        uint8_t green = g * 255; 
+        uint8_t blue = b * 255;
+        
+        // Set all LEDs to the same color
+        for (int i = 0; i < NUM_LEDS; i++) {
+            leds[i] = CRGB(red, green, blue);
+        }
+        FastLED.show();
+        delay(delayMs);
+    }
+    
+    // Hold the last color (purple) and stay there, not changin until user says so
+    for (int i = 0; i < NUM_LEDS; i++) {
+        leds[i] = CRGB(128, 0, 128);  // Purple color
+    }
+    FastLED.show();
+
+}
 
 // Update LED display based on current mode
 void updateLEDDisplay() {
@@ -428,6 +554,7 @@ void setup() {
 
   FastLED.addLeds<WS2811, LED_PIN, RGB>(leds, NUM_LEDS);
   clearAllLEDs();  // Initialize all LEDs to off
+
   
   // Send initial API level
   Serial.write(4);
@@ -477,6 +604,8 @@ void setup() {
   Serial.println("BLE device ready to connect");
   Serial.print("Device name: ");
   Serial.println(boardName);
+  // show startup sequence once we have booted fully
+  startupLEDs();
 }
 
 void loop() {
