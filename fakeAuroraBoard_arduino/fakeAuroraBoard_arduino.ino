@@ -36,9 +36,11 @@
 #define DISPLAY_NAME "Tension Board 2"
 #define API_LEVEL 3
 
+<<<<<<< Updated upstream
+=======
 // Feature toggle: Set to true for dual-route functionality, false for basic single-route mode
-#define DUAL_ROUTE_MODE true
 
+>>>>>>> Stashed changes
 // Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
 #define CONTINUOUS_ADVERTISING true
 
@@ -69,13 +71,12 @@ BLECharacteristic notifyCharacteristic(NOTIFY_CHARACTERISTIC, BLENotify | BLERea
 
 bool deviceConnected = false;
 
-// Global route storage for LED display
-#if DUAL_ROUTE_MODE
+// Runtime mode control
+bool isDualMode = true;  // true = dual route mode, false = single route mode
+
+// Global route storage for LED display (always available for both modes)
 std::vector<Hold> route1Holds;     // First route storage
 std::vector<Hold> route2Holds;     // Second route storage
-#else
-std::vector<Hold> currentHolds;    // Single route storage
-#endif
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -177,7 +178,10 @@ void startupLEDs() {
     if (NUM_LEDS <= 0) return;
     
     // Calculate number of steps needed for 5 second animation
+<<<<<<< Updated upstream
     const int totalSteps = 500; 
+=======
+>>>>>>> Stashed changes
     const int delayMs = 5;
     const float startWavelength = 400.0;
     const float endWavelength = 700.0;
@@ -300,27 +304,31 @@ void updateLEDDisplay() {
     // Clear all LEDs first
     clearAllLEDs();
     
-    #if DUAL_ROUTE_MODE
-    // Dual route mode: Display both routes
-    int totalLEDs = 0;
-    if (!route1Holds.empty()) {
-        displayRoute(route1Holds);
-        totalLEDs += route1Holds.size();
+    if (isDualMode) {
+        // Dual mode: Display both routes simultaneously
+        int totalLEDs = 0;
+        if (!route1Holds.empty()) {
+            displayRoute(route1Holds);
+            totalLEDs += route1Holds.size();
+        }
+        if (!route2Holds.empty()) {
+            displayRoute(route2Holds);
+            totalLEDs += route2Holds.size();
+        }
+        Serial.print("DUAL Mode - LEDs lit: ");
+        Serial.println(totalLEDs);
+    } else {
+        // Single mode: Display only the most recent route
+        if (!route2Holds.empty()) {
+            displayRoute(route2Holds);  // Show most recent (route2)
+            Serial.print("SINGLE Mode - LEDs lit: ");
+            Serial.println(route2Holds.size());
+        } else if (!route1Holds.empty()) {
+            displayRoute(route1Holds);  // Fall back to route1 if route2 empty
+            Serial.print("SINGLE Mode - LEDs lit: ");
+            Serial.println(route1Holds.size());
+        }
     }
-    if (!route2Holds.empty()) {
-        displayRoute(route2Holds);
-        totalLEDs += route2Holds.size();
-    }
-    Serial.print("LED Display Updated - Total LEDs lit: ");
-    Serial.println(totalLEDs);
-    #else
-    // Basic mode: Display single route
-    if (!currentHolds.empty()) {
-        displayRoute(currentHolds);
-        Serial.print("LED Display Updated - LEDs lit: ");
-        Serial.println(currentHolds.size());
-    }
-    #endif
     
     FastLED.show();
 }
@@ -372,19 +380,19 @@ void onBLEDisconnected(BLEDevice central) {
  * - 'Q': Query packet
  * - 'T': Test packet (single route, clears previous holds)
  * 
- * Operating Modes (controlled by DUAL_ROUTE_MODE flag):
- * - Basic Mode (false): Single route storage, new routes overwrite previous
- * - Dual Route Mode (true): Stores two routes alternately with different color schemes
- *   Route 1: Original colors
- *   Route 2: Green-biased colors (enhanced green, reduced red/blue)
- *   Alternation: Route1 -> Route2 -> Route1 -> Route2...
+ * Operating Modes (runtime toggle with 'T' command):
+ * - Single Mode: Shows one route at a time with uniform principal colors
+ *   Both routes use principal color scheme for consistent appearance
+ *   Display shows most recent route only (previous route cleared)
+ * - Dual Mode: Shows both routes simultaneously with different color schemes  
+ *   Route 1: Principal colors, Route 2: Alternative colors
+ *   Both routes visible at the same time
+ * Route Storage: Always alternates Route1 -> Route2 -> Route1 -> Route2...
  */
 
 // State management for climbing routes
 std::vector<Hold> tempHolds;       // Temporary storage for incoming route
-#if DUAL_ROUTE_MODE
 bool activeRoute = true;           // true = route1, false = route2
-#endif
 bool isNewClimb = true;            // Flag to track if this is a new climb sequence
 std::vector<uint8_t> packetBuffer; // Buffer for incomplete packets (handles fragmentation)
 
@@ -394,6 +402,15 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
     int length = characteristic.valueLength();
     
     if (length > 0) {
+        // Check for mode toggle command first
+        if (length == 1 && data[0] == 'T') {
+            isDualMode = !isDualMode;
+            Serial.print("Mode switched to: ");
+            Serial.println(isDualMode ? "DUAL" : "SINGLE");
+            updateLEDDisplay();  // Refresh display with new mode
+            return;
+        }
+        
         // Debug output: Show raw received bytes
         Serial.print("Received command: ");
         for (int i = 0; i < length; i++) {
@@ -453,11 +470,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // Handle route state management
             // 'T' packets indicate a new test route, clear previous holds
             if (packetTypeChar == 'T') {
-                #if DUAL_ROUTE_MODE
                 tempHolds.clear();  // Clear temporary storage for new route
-                #else
-                currentHolds.clear();  // Basic mode: clear current route
-                #endif
                 isNewClimb = true;
             }
             
@@ -491,11 +504,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     
                     // Store hold information
                     Hold h = {position, r, g, b, colorName};
-                    #if DUAL_ROUTE_MODE
                     tempHolds.push_back(h);
-                    #else
-                    tempHolds.push_back(h);
-                    #endif
                     
                     // Debug output: Show decoded hold
                     Serial.print("Hold at position "); Serial.print(position);
@@ -510,10 +519,9 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // Route completion handling
             // 'S' (Set) and 'T' (Test) packets indicate complete route transmission
             if (packetTypeChar == 'S' || packetTypeChar == 'T') {
-                #if DUAL_ROUTE_MODE
-                // Dual route mode: Store completed route and alternate between route slots
+                // Store completed route and alternate between route slots
                 if (activeRoute) {
-                    // Route 1: Apply principal color scheme
+                    // Route 1: Always gets principal colors
                     route1Holds = tempHolds;
                     for (Hold& h : route1Holds) {
                         h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
@@ -521,13 +529,19 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     }
                     Serial.println("\nRoute 1 stored (principal colors):");
                 } else {
-                    // Route 2: Apply alternative color scheme
+                    // Route 2: Color scheme depends on current mode
                     route2Holds = tempHolds;
                     for (Hold& h : route2Holds) {
                         h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
-                        applyAltColors(h.colorName, h.r, h.g, h.b);  // Apply alternative colors
+                        if (isDualMode) {
+                            applyAltColors(h.colorName, h.r, h.g, h.b);     // Alt colors in dual mode
+                        } else {
+                            applyPrincipalColors(h.colorName, h.r, h.g, h.b); // Principal colors in single mode
+                        }
                     }
-                    Serial.println("\nRoute 2 stored (alternative colors):");
+                    Serial.print("\nRoute 2 stored (");
+                    Serial.print(isDualMode ? "alternative" : "principal");
+                    Serial.println(" colors):");
                 }
                 
                 // Show the route that was just stored
@@ -539,8 +553,10 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                 // Toggle to next route slot for the next sequence
                 activeRoute = !activeRoute;
                 
-                // Show complete dual route summary
-                Serial.println("\n=== DUAL ROUTE SUMMARY ===");
+                // Show current route summary
+                Serial.print("\n=== ");
+                Serial.print(isDualMode ? "DUAL" : "SINGLE");
+                Serial.println(" MODE SUMMARY ===");
                 if (!route1Holds.empty()) {
                     Serial.println("Route 1:");
                     for (const Hold& h : route1Holds) {
@@ -556,16 +572,6 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     }
                 }
                 Serial.println("========================");
-                
-                #else
-                // Basic mode: Store route from tempHolds to currentHolds
-                currentHolds = tempHolds;
-                Serial.println("\nComplete climb summary:");
-                for (const Hold& h : currentHolds) {
-                    Serial.print("Position "); Serial.print(h.position);
-                    Serial.print(": "); Serial.println(h.colorName);
-                }
-                #endif
                 
                 // Clear temporary storage for next route
                 tempHolds.clear();
@@ -645,6 +651,9 @@ void setup() {
   Serial.println("BLE device ready to connect");
   Serial.print("Device name: ");
   Serial.println(boardName);
+  Serial.print("Current mode: ");
+  Serial.println(isDualMode ? "DUAL" : "SINGLE");
+  Serial.println("Send 'T' via BLE to toggle mode");
   // show startup sequence once we have booted fully
   startupLEDs();
 }
