@@ -1,6 +1,7 @@
 #include <ArduinoBLE.h>
 #include <vector>
 #include <FastLED.h>
+#include <tuple>
 
 /*
  * FAKE AURORA BOARD - Arduino R4 WiFi Climbing Training Board Simulator
@@ -36,7 +37,7 @@
 #define API_LEVEL 3
 
 // Feature toggle: Set to true for dual-route functionality, false for basic single-route mode
-#define DUAL_ROUTE_MODE false
+#define DUAL_ROUTE_MODE true
 
 // Aurora Board protocol UUIDs
 #define ADVERTISING_SERVICE_UUID "4488B571-7806-4DF6-BCFF-A2897E4953FF"  // Aurora Board advertising service
@@ -101,14 +102,36 @@ uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
     return (~sum) & 255;
 }
 
-// Helper function to apply green bias to colors for dual-route mode
-// Used to differentiate Route 2 from Route 1 with a green-tinted color scheme
-void applyGreenBias(uint8_t& r, uint8_t& g, uint8_t& b) {
-    // Boost green component while slightly reducing red and blue
-    // This creates a green-tinted version of the original color
-    g = min(255, (int)g + 60);           // Increase green (+60)
-    r = max(0, (int)r - 20);             // Slightly reduce red (-20)
-    b = max(0, (int)b - 20);             // Slightly reduce blue (-20)
+// Helper function to apply principal colors (Route 1)
+// Green	(0, 255, 80)	#00FF50	Neon green
+// Blue	(0, 0, 255)	#0000FF pure blue
+// Purple	(100, 0, 255)	#B400FF	Vivid violet
+// Red	(255, 25, 25)	#FF3232	Bright scarlet
+void applyPrincipalColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
+    colorName.toLowerCase();  // Case-insensitive comparison
+    if (colorName == "green") { r = 0; g = 255; b = 80; }
+    else if (colorName == "blue") { r = 0; g = 0; b = 255; }
+    else if (colorName == "purple" || colorName == "pink") { r = 150; g = 0; b = 255; }
+    else if (colorName == "red") { r = 255; g = 0; b = 0; }
+    else if (colorName == "yellow") { r = 255; g = 255; b = 0; }  // Add yellow support
+    else if (colorName == "white") { r = 255; g = 255; b = 255; }  // Add white support
+    // If unknown color, keep original values
+}
+
+// Helper function to apply alternative colors (Route 2)
+// Green	to (100, 255, 0)	#64FF00	Lime chartreuse
+// Blue	to (0, 200, 255)	#00C8FF	Cyan-blue glow
+// Purple	to (255, 0, 100)	#FF00C8	Hot magenta
+// Red	to (255, 100, 0)	#FF6400	Vivid orange-red
+void applyAltColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
+    colorName.toLowerCase();  // Case-insensitive comparison
+    if (colorName == "green") { r = 100; g = 255; b = 0; }
+    else if (colorName == "blue") { r = 0; g = 200; b = 255; }
+    else if (colorName == "purple" || colorName == "pink") { r = 255; g = 0; b = 100; }
+    else if (colorName == "red") { r = 255; g = 100; b = 0; }
+    else if (colorName == "yellow") { r = 200; g = 255; b = 0; }  // Add yellow support
+    else if (colorName == "white") { r = 255; g = 200; b = 200; }  // Add white support
+    // If unknown color, keep original values
 }
 
 /*
@@ -475,18 +498,21 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                 #if DUAL_ROUTE_MODE
                 // Dual route mode: Store completed route and alternate between route slots
                 if (activeRoute) {
-                    // Route 1: Store with original colors
+                    // Route 1: Apply principal color scheme
                     route1Holds = tempHolds;
-                    Serial.println("\nRoute 1 stored (original colors):");
-                } else {
-                    // Route 2: Store with green-biased colors
-                    route2Holds = tempHolds;
-                    // Apply green bias to all holds in route 2
-                    for (Hold& h : route2Holds) {
-                        applyGreenBias(h.r, h.g, h.b);
-                        h.colorName = getColorName(h.r, h.g, h.b);  // Update color name
+                    for (Hold& h : route1Holds) {
+                        h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
+                        applyPrincipalColors(h.colorName, h.r, h.g, h.b);  // Apply principal colors
                     }
-                    Serial.println("\nRoute 2 stored (green-biased colors):");
+                    Serial.println("\nRoute 1 stored (principal colors):");
+                } else {
+                    // Route 2: Apply alternative color scheme
+                    route2Holds = tempHolds;
+                    for (Hold& h : route2Holds) {
+                        h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
+                        applyAltColors(h.colorName, h.r, h.g, h.b);  // Apply alternative colors
+                    }
+                    Serial.println("\nRoute 2 stored (alternative colors):");
                 }
                 
                 // Show the route that was just stored
