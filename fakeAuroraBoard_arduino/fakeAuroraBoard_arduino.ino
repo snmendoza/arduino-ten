@@ -37,7 +37,7 @@
 #define API_LEVEL 3
 
 // Feature toggle: Set to true for dual-route functionality, false for basic single-route mode
-#define DUAL_ROUTE_MODE true
+#define DUAL_ROUTE_MODE false
 
 // Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
 #define CONTINUOUS_ADVERTISING true
@@ -51,6 +51,9 @@
 #define LED_PIN 13  // LED pin for Arduino R4 WiFi (changed from 25 to 13)
 #define NUM_LEDS 500  // Replace with the number of LEDs in your strip
 #define DELAY_TIME 10  // Delay between LED movements (in milliseconds)
+
+// Global board name buffer for BLE
+char boardName[64];
 
 // Structure to store hold information
 struct Hold {
@@ -177,7 +180,7 @@ void startupLEDs() {
     if (NUM_LEDS <= 0) return;
     
     // Calculate number of steps needed for 5 second animation
-    const int totalSteps = 500; 
+    const int totalSteps = 50; 
     const int delayMs = 5;
     const float startWavelength = 400.0;
     const float endWavelength = 700.0;
@@ -344,10 +347,23 @@ void onBLEDisconnected(BLEDevice central) {
     deviceConnected = false;
     Serial.print("Device disconnected: ");
     Serial.println(central.address());
-    
-    // Automatically restart advertising when device disconnects
+
+    // Restart BLE stack to recover from stuck state
+    BLE.end();
+    delay(100);
+    BLE.begin();
+    BLE.setLocalName(boardName); // If boardName is global or static
+    BLE.setDeviceName(boardName);
+    BLE.setEventHandler(BLEConnected, onBLEConnected);
+    BLE.setEventHandler(BLEDisconnected, onBLEDisconnected);
+    dataTransferService.addCharacteristic(dataTransferCharacteristic);
+    dataTransferService.addCharacteristic(notifyCharacteristic);
+    BLE.addService(advertisingService);
+    BLE.addService(dataTransferService);
+    dataTransferCharacteristic.setEventHandler(BLEWritten, onDataTransferCharacteristicWritten);
+    BLE.setAdvertisedService(advertisingService);
     BLE.advertise();
-    Serial.println("Resumed BLE advertising for new connections");
+    Serial.println("Resumed BLE advertising for new connections (BLE stack restarted)");
 }
 
 /*
@@ -601,7 +617,6 @@ void setup() {
   Serial.write(4);
   Serial.write(API_LEVEL);
 
-  char boardName[64];  // Increased buffer size for safety
   snprintf(boardName, sizeof(boardName), "%s@%d", DISPLAY_NAME, API_LEVEL);
 
   Serial.println("Initializing BLE...");
@@ -662,6 +677,12 @@ void loop() {
   
   // Poll BLE events
   BLE.poll();
+
+  // Ensure BLE is always advertising for quick device switching
+  if (!deviceConnected) {
+    BLE.advertise();
+    // Optional: Serial.println("Ensuring BLE advertising (loop watchdog)");
+  }
   
   // LED display is updated automatically when routes are received
   // No need for continuous updates unless you want animations
