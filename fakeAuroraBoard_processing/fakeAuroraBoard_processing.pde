@@ -6,6 +6,9 @@ PImage screws;
 
 long timeOfLastPortCheck = 0;
 
+// Player lanes toggle: Set to true to enable player lane functionality
+final boolean PLAYER_LANES_ENABLED = true;
+
 void setup() {
   size(700, 785);
   decoder = new DataDecoder(this);
@@ -83,6 +86,14 @@ void drawEmptyBackground() {
   fill(0);
   text("Press 'q' to go back to COM port menu", 5, 13);
   
+  // Display player lane status if enabled
+  if (PLAYER_LANES_ENABLED) {
+    fill(0, 128, 0);
+    text("Player Lanes: ENABLED", 5, 28);
+    fill(100);
+    text("Devices will alternate between color schemes", 5, 43);
+  }
+  
   image(bolds, -15, 15, width + 25, height);
   image(screws, -15, 15, width + 25, height);
   
@@ -127,6 +138,15 @@ void draw() {
     int apiLevel = comms.checkForAPILevel();
     if (apiLevel > -1) {
       decoder.setAPILevel(apiLevel);
+      
+      // Configure player lanes if enabled
+      if (PLAYER_LANES_ENABLED) {
+        decoder.setPlayerLanesEnabled(true);
+        // Note: Device color scheme assignment is handled by the Arduino
+        // The Processing app just receives the colored data
+        println("Player lanes enabled - colors will be assigned by device");
+      }
+      
       drawEmptyBackground();
     }
   }

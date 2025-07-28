@@ -42,6 +42,9 @@
 // Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
 #define CONTINUOUS_ADVERTISING true
 
+// Player lanes toggle: Set to true to enable player lane functionality with alternating color schemes
+#define PLAYER_LANES_ENABLED true
+
 // Aurora Board protocol UUIDs
 #define ADVERTISING_SERVICE_UUID "4488B571-7806-4DF6-BCFF-A2897E4953FF"  // Aurora Board advertising service
 #define DATA_TRANSFER_SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"  // Nordic UART Service
@@ -61,6 +64,20 @@ struct Hold {
     uint8_t r, g, b;
     String colorName;
 };
+
+#if PLAYER_LANES_ENABLED
+// Structure to store device information for player lanes
+struct DeviceInfo {
+    String address;
+    uint8_t colorSchemeFlag;  // 0 = principal colors, 1 = alternative colors
+    unsigned long lastSeen;
+};
+
+// Player lane management
+std::vector<DeviceInfo> registeredDevices;
+uint8_t nextColorSchemeFlag = 0;  // Alternates between 0 and 1 for new devices
+uint8_t currentDeviceColorScheme = 0;  // Color scheme for currently connected device
+#endif
 
 CRGB leds[NUM_LEDS];
 
@@ -115,6 +132,8 @@ uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
 // Red	(255, 25, 25)	#FF3232	Bright scarlet
 void applyPrincipalColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
     colorName.toLowerCase();  // Case-insensitive comparison
+    if (colorName == "green") { r = 0; g = 255; b = 80; }
+    else if (colorName == "blue") { r = 0; g = 0; b = 255; }
     else if (colorName == "purple" || colorName == "pink") { r = 150; g = 0; b = 255; }
     else if (colorName == "red") { r = 255; g = 0; b = 0; }
     else if (colorName == "white") { r = 255; g = 255; b = 255; }  // Add white support
@@ -136,6 +155,71 @@ void applyAltColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
     else if (colorName == "white") { r = 255; g = 200; b = 200; }  // Add white support
     // If unknown color, keep original values
 }
+
+#if PLAYER_LANES_ENABLED
+// Function to register a new device or update existing device info
+uint8_t registerOrUpdateDevice(String deviceAddress) {
+    // Check if device already exists
+    for (auto& device : registeredDevices) {
+        if (device.address == deviceAddress) {
+            device.lastSeen = millis();
+            Serial.print("Device reconnected: ");
+            Serial.print(deviceAddress);
+            Serial.print(" - Color scheme flag: ");
+            Serial.println(device.colorSchemeFlag);
+            return device.colorSchemeFlag;
+        }
+    }
+    
+    // Device not found, register as new device
+    DeviceInfo newDevice;
+    newDevice.address = deviceAddress;
+    newDevice.colorSchemeFlag = nextColorSchemeFlag;
+    newDevice.lastSeen = millis();
+    
+    registeredDevices.push_back(newDevice);
+    
+    Serial.print("New device registered: ");
+    Serial.print(deviceAddress);
+    Serial.print(" - Assigned color scheme flag: ");
+    Serial.print(nextColorSchemeFlag);
+    Serial.print(" (");
+    Serial.print(nextColorSchemeFlag == 0 ? "principal" : "alternative");
+    Serial.println(" colors)");
+    
+    // Alternate color scheme for next device (0 -> 1 -> 0 -> 1...)
+    uint8_t assignedFlag = nextColorSchemeFlag;
+    nextColorSchemeFlag = (nextColorSchemeFlag + 1) % 2;
+    
+    return assignedFlag;
+}
+
+// Function to clean up old device entries (optional, to prevent memory bloat)
+void cleanupOldDevices() {
+    unsigned long currentTime = millis();
+    const unsigned long DEVICE_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
+    
+    auto it = registeredDevices.begin();
+    while (it != registeredDevices.end()) {
+        if (currentTime - it->lastSeen > DEVICE_TIMEOUT) {
+            Serial.print("Removing old device: ");
+            Serial.println(it->address);
+            it = registeredDevices.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// Function to apply color scheme based on device's assigned flag
+void applyDeviceColorScheme(String colorName, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t colorSchemeFlag) {
+    if (colorSchemeFlag == 0) {
+        applyPrincipalColors(colorName, r, g, b);
+    } else {
+        applyAltColors(colorName, r, g, b);
+    }
+}
+#endif
 
 /*
  * LED Control System
@@ -330,6 +414,21 @@ void onBLEConnected(BLEDevice central) {
     deviceConnected = true;
     Serial.print("Device connected: ");
     Serial.println(central.address());
+    
+    #if PLAYER_LANES_ENABLED
+    // Register device and get its assigned color scheme
+    String deviceAddress = central.address();
+    currentDeviceColorScheme = registerOrUpdateDevice(deviceAddress);
+    Serial.print("Using color scheme flag: ");
+    Serial.println(currentDeviceColorScheme);
+    
+    // Periodically clean up old devices (every 100 connections)
+    static uint16_t connectionCount = 0;
+    connectionCount++;
+    if (connectionCount % 100 == 0) {
+        cleanupOldDevices();
+    }
+    #endif
     
     #if CONTINUOUS_ADVERTISING
     // Continue advertising to allow immediate device switching
@@ -526,21 +625,35 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                 #if DUAL_ROUTE_MODE
                 // Dual route mode: Store completed route and alternate between route slots
                 if (activeRoute) {
-                    // Route 1: Apply principal color scheme
+                    // Route 1: Apply color scheme
                     route1Holds = tempHolds;
                     for (Hold& h : route1Holds) {
                         h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
+                        #if PLAYER_LANES_ENABLED
+                        applyDeviceColorScheme(h.colorName, h.r, h.g, h.b, currentDeviceColorScheme);
+                        Serial.print("\nRoute 1 stored (device color scheme ");
+                        Serial.print(currentDeviceColorScheme);
+                        Serial.println("):");
+                        #else
                         applyPrincipalColors(h.colorName, h.r, h.g, h.b);  // Apply principal colors
+                        Serial.println("\nRoute 1 stored (principal colors):");
+                        #endif
                     }
-                    Serial.println("\nRoute 1 stored (principal colors):");
                 } else {
-                    // Route 2: Apply alternative color scheme
+                    // Route 2: Apply color scheme
                     route2Holds = tempHolds;
                     for (Hold& h : route2Holds) {
                         h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
+                        #if PLAYER_LANES_ENABLED
+                        applyDeviceColorScheme(h.colorName, h.r, h.g, h.b, currentDeviceColorScheme);
+                        Serial.print("\nRoute 2 stored (device color scheme ");
+                        Serial.print(currentDeviceColorScheme);
+                        Serial.println("):");
+                        #else
                         applyAltColors(h.colorName, h.r, h.g, h.b);  // Apply alternative colors
+                        Serial.println("\nRoute 2 stored (alternative colors):");
+                        #endif
                     }
-                    Serial.println("\nRoute 2 stored (alternative colors):");
                 }
                 
                 // Show the route that was just stored
@@ -573,7 +686,20 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                 #else
                 // Basic mode: Store route from tempHolds to currentHolds
                 currentHolds = tempHolds;
+                
+                #if PLAYER_LANES_ENABLED
+                // Apply player lane color scheme based on connected device
+                for (Hold& h : currentHolds) {
+                    h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
+                    applyDeviceColorScheme(h.colorName, h.r, h.g, h.b, currentDeviceColorScheme);
+                }
+                Serial.print("\nComplete climb summary (color scheme ");
+                Serial.print(currentDeviceColorScheme);
+                Serial.println("):");
+                #else
                 Serial.println("\nComplete climb summary:");
+                #endif
+                
                 for (const Hold& h : currentHolds) {
                     Serial.print("Position "); Serial.print(h.position);
                     Serial.print(": "); Serial.println(h.colorName);
@@ -657,6 +783,14 @@ void setup() {
   Serial.println("BLE device ready to connect");
   Serial.print("Device name: ");
   Serial.println(boardName);
+  
+  #if PLAYER_LANES_ENABLED
+  Serial.println("Player Lanes: ENABLED");
+  Serial.println("Devices will be assigned alternating color schemes");
+  #else
+  Serial.println("Player Lanes: DISABLED");
+  #endif
+  
   // show startup sequence once we have booted fully
   startupLEDs();
 }
