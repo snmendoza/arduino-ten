@@ -8,6 +8,10 @@ class DataDecoder {
   
   private LEDPositionParser positionParser;
   
+  // Player lanes support
+  private boolean playerLanesEnabled = false;
+  private int currentDeviceColorScheme = 0;  // 0 = principal, 1 = alternative
+  
   public DataDecoder(PApplet parent) {
     positionParser = new LEDPositionParser(parent);
   }
@@ -17,6 +21,14 @@ class DataDecoder {
       throw new RuntimeException("Invalid API level!");
     }
     API_LEVEL = apiLevel;
+  }
+  
+  public void setPlayerLanesEnabled(boolean enabled) {
+    playerLanesEnabled = enabled;
+  }
+  
+  public void setDeviceColorScheme(int colorScheme) {
+    currentDeviceColorScheme = colorScheme;
   }
   
   public void newByteIn(int dataByte) {    
@@ -83,6 +95,13 @@ class DataDecoder {
       for(int i = 5; i < currentPacketLength - 1; i += 2) {
         int position = currentPacket.get(i) + ((currentPacket.get(i + 1) & 0b11) << 8);
         int clr[] = scaledColorToFullColorV2(currentPacket.get(i + 1));
+        
+        // Apply player lane color scheme if enabled
+        if (playerLanesEnabled) {
+          String colorName = getColorName(clr[0], clr[1], clr[2]);
+          clr = applyDeviceColorScheme(colorName, clr[0], clr[1], clr[2], currentDeviceColorScheme);
+        }
+        
         int boldCoords[] = positionParser.getBoldCoordsFromPosition(position);
         if (boldCoords != null) {
             Hold h = new Hold(boldCoords[0], boldCoords[1], clr[0], clr[1], clr[2], true);
@@ -100,6 +119,13 @@ class DataDecoder {
       for(int i = 5; i < currentPacketLength - 1; i += 3) {
         int position = (currentPacket.get(i + 1) << 8) + currentPacket.get(i);
         int clr[] = scaledColorToFullColorV3(currentPacket.get(i + 2));
+        
+        // Apply player lane color scheme if enabled
+        if (playerLanesEnabled) {
+          String colorName = getColorName(clr[0], clr[1], clr[2]);
+          clr = applyDeviceColorScheme(colorName, clr[0], clr[1], clr[2], currentDeviceColorScheme);
+        }
+        
         int boldCoords[] = positionParser.getBoldCoordsFromPosition(position);
         if (boldCoords != null) {
             Hold h = new Hold(boldCoords[0], boldCoords[1], clr[0], clr[1], clr[2], true);
@@ -163,5 +189,49 @@ class DataDecoder {
     fullColor[1] = (int)(((holdData & 0b00011100) >> 2) / 7. * 255.);
     fullColor[0] = (int)(((holdData & 0b11100000) >> 5) / 7. * 255.);
     return fullColor;
+  }
+  
+  // Helper function to get color name from RGB values
+  private String getColorName(int r, int g, int b) {
+    if (r > 200 && g < 50 && b < 50) return "red";
+    if (r < 50 && g > 200 && b < 50) return "green";
+    if (r < 50 && g < 50 && b > 200) return "blue";
+    if (r > 200 && g < 50 && b > 200) return "pink";
+    if (r > 200 && g > 200 && b < 50) return "yellow";
+    if (r > 200 && g > 200 && b > 200) return "white";
+    if (r < 50 && g < 50 && b < 50) return "black";
+    return "unknown";
+  }
+  
+  // Apply principal color scheme (color scheme 0)
+  private int[] applyPrincipalColors(String colorName, int r, int g, int b) {
+    colorName = colorName.toLowerCase();
+    if (colorName.equals("green")) return new int[]{0, 255, 80};
+    else if (colorName.equals("blue")) return new int[]{0, 0, 255};
+    else if (colorName.equals("pink") || colorName.equals("purple")) return new int[]{150, 0, 255};
+    else if (colorName.equals("red")) return new int[]{255, 0, 0};
+    else if (colorName.equals("white")) return new int[]{255, 255, 255};
+    else return new int[]{r, g, b}; // Keep original if unknown
+  }
+  
+  // Apply alternative color scheme (color scheme 1)
+  private int[] applyAltColors(String colorName, int r, int g, int b) {
+    colorName = colorName.toLowerCase();
+    if (colorName.equals("green")) return new int[]{100, 255, 0};
+    else if (colorName.equals("blue")) return new int[]{0, 200, 255};
+    else if (colorName.equals("pink") || colorName.equals("purple")) return new int[]{255, 0, 100};
+    else if (colorName.equals("red")) return new int[]{255, 100, 0};
+    else if (colorName.equals("yellow")) return new int[]{200, 255, 0};
+    else if (colorName.equals("white")) return new int[]{255, 200, 200};
+    else return new int[]{r, g, b}; // Keep original if unknown
+  }
+  
+  // Apply device color scheme based on flag
+  private int[] applyDeviceColorScheme(String colorName, int r, int g, int b, int colorSchemeFlag) {
+    if (colorSchemeFlag == 0) {
+      return applyPrincipalColors(colorName, r, g, b);
+    } else {
+      return applyAltColors(colorName, r, g, b);
+    }
   }
 };

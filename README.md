@@ -11,6 +11,44 @@ This project uses [Processing](https://processing.org/) and [Arduino IDE](https:
     - Or just connect to the [web](https://grip-connect-kilter-board.vercel.app/?route=p1083r15p1117r15p1164r12p1185r12p1233r13p1282r13p1303r13p1372r13p1392r14p1505r15) application.
 5. Enjoy! Everything should now function as a regular Kilter Board - you can connect to it with the official app or your own software.
 
+## Player Lanes Feature
+This project now includes a **Player Lanes** system that assigns different color schemes to different devices as they connect. This feature allows multiple climbers to use the same board with visually distinct routes.
+
+### How it works:
+- **Device Registration**: Each device that connects is automatically registered with a unique Bluetooth address
+- **Alternating Color Schemes**: New devices are assigned alternating color scheme flags (0 for principal colors, 1 for alternative colors)
+- **Persistent Assignment**: When a device reconnects, it retains its previously assigned color scheme
+- **Automatic Color Application**: Routes sent from each device are automatically displayed with their assigned color scheme
+
+### Color Schemes:
+- **Principal Colors (Flag 0)**: 
+  - Green: Neon green (#00FF50)
+  - Blue: Pure blue (#0000FF) 
+  - Purple: Vivid violet (#9600FF)
+  - Red: Bright red (#FF0000)
+  
+- **Alternative Colors (Flag 1)**:
+  - Green: Lime chartreuse (#64FF00)
+  - Blue: Cyan-blue glow (#00C8FF)
+  - Purple: Hot magenta (#FF0064)
+  - Red: Vivid orange-red (#FF6400)
+
+### Configuration:
+- **Arduino**: Set `#define PLAYER_LANES_ENABLED true` in `fakeAuroraBoard_arduino.ino` to enable player lanes
+- **Processing**: Set `final boolean PLAYER_LANES_ENABLED = true` in `fakeAuroraBoard_processing.pde` to enable display features
+- To disable player lanes, set both flags to `false` and the system will work as before
+
+### Compatibility with Dual Route Mode:
+Player lanes work seamlessly with the existing dual route functionality:
+- When `DUAL_ROUTE_MODE` is enabled, each device's routes are stored separately and displayed with the device's assigned color scheme
+- When `PLAYER_LANES_ENABLED` is false, dual route mode uses the original fixed color schemes (principal vs alternative)
+- When both are enabled, devices get their assigned color scheme applied to whichever route slot they're using
+
+### Device Management:
+- Device information is stored in memory and persists until the Arduino is reset
+- Old device entries are automatically cleaned up after 24 hours of inactivity
+- Device assignment information is logged to Serial for debugging
+
 # Changing the board name
 The name of aurora boards are in the following format:
 1. A string of alphanumeric characters
