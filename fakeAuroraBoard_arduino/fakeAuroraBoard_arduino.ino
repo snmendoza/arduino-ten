@@ -115,8 +115,11 @@ uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
 // Red	(255, 25, 25)	#FF3232	Bright scarlet
 void applyPrincipalColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
     colorName.toLowerCase();  // Case-insensitive comparison
+    if (colorName == "green") { r = 0; g = 255; b = 30; }
+    else if (colorName == "blue") { r = 50; g = 50; b = 255; }
     else if (colorName == "purple" || colorName == "pink") { r = 150; g = 0; b = 255; }
     else if (colorName == "red") { r = 255; g = 0; b = 0; }
+    else if (colorName == "yellow") { r = 255; g = 255; b = 100; }  // Add yellow support
     else if (colorName == "white") { r = 255; g = 255; b = 255; }  // Add white support
     // If unknown color, keep original values
 }
@@ -501,6 +504,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     uint8_t r, g, b;
                     decodeColor(packetBuffer[i+2], r, g, b);
                     String colorName = getColorName(r, g, b);
+                    applyPrincipalColors(colorName, r, g, b);
                     
                     // Store hold information
                     Hold h = {position, r, g, b, colorName};
