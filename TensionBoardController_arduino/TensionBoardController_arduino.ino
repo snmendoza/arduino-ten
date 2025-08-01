@@ -3,6 +3,12 @@
 #include <FastLED.h>
 #include <tuple>
 
+// Modular includes
+#include "ColorSchemes.h"
+#include "BluetoothHandler.h"
+#include "LaneHandler.h"
+#include "RouteHandler.h"
+
 /*
  * FAKE AURORA BOARD - Arduino R4 WiFi Climbing Training Board Simulator
  * =====================================================================
@@ -319,7 +325,7 @@ void updateLEDDisplay() {
     #else
     // Basic mode: Display single route
     if (!currentHolds.empty()) {
-        displayRoute(currentHolds);
+        displayRoute(currentHHolds);
         Serial.print("LED Display Updated - LEDs lit: ");
         Serial.println(currentHolds.size());
     }
@@ -608,85 +614,21 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial);  // Wait for serial port to connect
+  while (!Serial);
+  Serial.println("[Main] Starting setup...");
 
   FastLED.addLeds<WS2811, LED_PIN, RGB>(leds, NUM_LEDS);
-  clearAllLEDs();  // Initialize all LEDs to off
-
-  
-  // Send initial API level
-  Serial.write(4);
-  Serial.write(API_LEVEL);
+  clearAllLEDs();
 
   snprintf(boardName, sizeof(boardName), "%s@%d", DISPLAY_NAME, API_LEVEL);
-
-  Serial.println("Initializing BLE...");
-  Serial.println("Using UUIDs:");
-  Serial.println(ADVERTISING_SERVICE_UUID);
-  Serial.println(DATA_TRANSFER_SERVICE_UUID);
-  Serial.println(DATA_TRANSFER_CHARACTERISTIC);
-  Serial.println(NOTIFY_CHARACTERISTIC);
-  
-  // Initialize BLE
-  if (!BLE.begin()) {
-    Serial.println("Starting Bluetooth® Low Energy module failed!");
-    while (1);
-  }
-
-  // Set device name and local name
-  BLE.setLocalName(boardName);
-  BLE.setDeviceName(boardName);
-
-  // Set up event handlers
-  BLE.setEventHandler(BLEConnected, onBLEConnected);
-  BLE.setEventHandler(BLEDisconnected, onBLEDisconnected);
-
-  // Add characteristics to services
-  dataTransferService.addCharacteristic(dataTransferCharacteristic);
-  dataTransferService.addCharacteristic(notifyCharacteristic);
-
-  // Add services to BLE
-  BLE.addService(advertisingService);
-  BLE.addService(dataTransferService);
-
-  // Set characteristic event handlers
-  dataTransferCharacteristic.setEventHandler(BLEWritten, onDataTransferCharacteristicWritten);
-
-  // Set the advertised service
-  BLE.setAdvertisedService(advertisingService);
-
-  // Start advertising
-  BLE.advertise();
-  
-  Serial.println("BLE device ready to connect");
-  Serial.print("Device name: ");
+  Serial.print("[Main] Device name: ");
   Serial.println(boardName);
-  // show startup sequence once we have booted fully
-  startupLEDs();
+
+  setupBluetooth(); // Now handled in BluetoothHandler
+  startupLEDs();    // Keep this in main for now
 }
 
 void loop() {
-  // Handle serial communication for API level queries
-  if (Serial.available() > 0) {
-    int inByte = Serial.read();
-    if (inByte == 4) {
-      // Respond with API level
-      Serial.write(4);
-      Serial.write(API_LEVEL);
-    }
-  }
-  
-  // Poll BLE events
-  BLE.poll();
-
-  // Ensure BLE is always advertising for quick device switching
-  if (!deviceConnected) {
-    BLE.advertise();
-    // Optional: Serial.println("Ensuring BLE advertising (loop watchdog)");
-  }
-  
-  // LED display is updated automatically when routes are received
-  // No need for continuous updates unless you want animations
-  
+  handleBluetoothEvents(); // Now handled in BluetoothHandler
   delay(DELAY_TIME);
 }
