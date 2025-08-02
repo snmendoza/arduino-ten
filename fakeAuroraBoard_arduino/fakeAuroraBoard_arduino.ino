@@ -91,9 +91,14 @@ std::vector<Hold> route2Holds;     // Second route storage
 std::vector<Hold> currentHolds;    // Single route storage
 
 // set mac address of current device (if connected to a device) to lane
+// if already in list, assign lane
+// if not in list, add to list
 void setMacLane(int lane) {
-    if (deviceConnected) {
+    if (!deviceConnected) return;
+    
     String mac = BLE.address();
+    
+    // Check if MAC address already exists in list
     for (int i = 0; i < macLaneCount; ++i) {
         if (macLaneList[i].mac == mac) {
             macLaneList[i].lane = lane;
@@ -104,11 +109,19 @@ void setMacLane(int lane) {
             return;
         }
     }
+    
+    // MAC not found, add new entry if there's space
     if (macLaneCount < 100) {
-            macLaneList[macLaneCount++] = {mac, lane};
-        }
+        macLaneList[macLaneCount++] = {mac, lane};
+        Serial.print("Mac ");
+        Serial.print(mac);
+        Serial.print(" added to lane ");
+        Serial.println(lane);
+    } else {
+        Serial.println("Mac lane list full");
     }
 }
+
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -570,6 +583,23 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             if (packetTypeChar == 'S' || packetTypeChar == 'T') {
                 if (dualRouteMode) {
                     // Dual route mode: Store completed route and alternate between route slots
+                    // in dual route mode, if the connected mac address has a lane, apply route to that lane, lane 1 == principal colors, lane 2 == alternative colors
+                    // logic: if device connected
+                        // if has lane assignment
+                            // lane 1 => route1/principal colors
+                            // lane 2 => route2/alternative colors
+                    if (deviceConnected) {
+                        for (int i = 0; i < macLaneCount; ++i) {
+                            if (macLaneList[i].mac == BLE.address()) {
+                                int lane = macLaneList[i].lane;
+                                if (lane == 1) {
+                                    activeRoute = true;
+                                } else if (lane == 2) {
+                                    activeRoute = false;
+                                }
+                            }
+                        }
+                    }
                     if (activeRoute) {
                         // Clear and store Route 1
                         route1Holds.clear();
@@ -739,6 +769,13 @@ void checkIRRemote() {
                  IrReceiver.decodedIRData.command == 0x33) {
             Serial.println("IR: Down arrow pressed");
             setMacLane(1);
+        }
+        // 0xC7EA Command: 0x78 => return, clear lane assignment
+        else if (IrReceiver.decodedIRData.protocol == NEC &&
+                 IrReceiver.decodedIRData.address == 0xC7EA &&
+                 IrReceiver.decodedIRData.command == 0x78) {
+            Serial.println("IR: Return pressed");
+            setMacLane(0);
         }
         IrReceiver.resume();
     }
