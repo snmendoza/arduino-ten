@@ -2,8 +2,9 @@
 #include <vector>
 #include <FastLED.h>
 #include <tuple>
+#include <IRremote.h>
 
-/*
+/*/Users/SeanMacbook/Documents/Arduino/sketch_may10IRRemote2/ReceiveDump/ReceiveDump.inopin
  * FAKE AURORA BOARD - Arduino R4 WiFi Climbing Training Board Simulator
  * =====================================================================
  * 
@@ -52,6 +53,8 @@ bool dualRouteMode = false; // false = single route, true = dual route
 #define NUM_LEDS 500  // Replace with the number of LEDs in your strip
 #define DELAY_TIME 10  // Delay between LED movements (in milliseconds)
 
+#define IR_RECEIVE_PIN 9  // Define the IR receiver pin
+
 // Global board name buffer for BLE
 char boardName[64];
 
@@ -61,6 +64,16 @@ struct Hold {
     uint8_t r, g, b;
     String colorName;
 };
+
+struct MacLanePair {
+    String mac;
+    int lane;
+};
+
+MacLanePair macLaneList[100]; // Up to 100 players
+int macLaneCount = 0;
+
+
 
 CRGB leds[NUM_LEDS];
 
@@ -76,6 +89,26 @@ bool deviceConnected = false;
 std::vector<Hold> route1Holds;     // First route storage
 std::vector<Hold> route2Holds;     // Second route storage
 std::vector<Hold> currentHolds;    // Single route storage
+
+// set mac address of current device (if connected to a device) to lane
+void setMacLane(int lane) {
+    if (deviceConnected) {
+    String mac = BLE.address();
+    for (int i = 0; i < macLaneCount; ++i) {
+        if (macLaneList[i].mac == mac) {
+            macLaneList[i].lane = lane;
+            Serial.print("Mac ");
+            Serial.print(mac);
+            Serial.print(" set to lane ");
+            Serial.println(lane);
+            return;
+        }
+    }
+    if (macLaneCount < 100) {
+            macLaneList[macLaneCount++] = {mac, lane};
+        }
+    }
+}
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -623,6 +656,7 @@ void setup() {
   FastLED.addLeds<WS2811, LED_PIN, RGB>(leds, NUM_LEDS);
   clearAllLEDs();  // Initialize all LEDs to off
 
+  IrReceiver.begin(IR_RECEIVE_PIN, ENABLE_LED_FEEDBACK); // Start IR receiver
   
   // Send initial API level
   Serial.write(4);
@@ -675,6 +709,41 @@ void setup() {
   startupLEDs();
 }
 
+void checkIRRemote() {
+    if (IrReceiver.decode()) {
+        Serial.print("Protocol: ");
+        Serial.print(IrReceiver.decodedIRData.protocol);
+        Serial.print(" Address: 0x");
+        Serial.print(IrReceiver.decodedIRData.address, HEX);
+        Serial.print(" Command: 0x");
+        Serial.println(IrReceiver.decodedIRData.command, HEX);
+
+        if (IrReceiver.decodedIRData.protocol == NEC &&
+            IrReceiver.decodedIRData.address == 0xC7EA &&
+            IrReceiver.decodedIRData.command == 0x61) {
+            dualRouteMode = !dualRouteMode;
+            Serial.print("IR: Toggled dualRouteMode. Now: ");
+            Serial.println(dualRouteMode ? "DUAL" : "SINGLE");
+        }
+        // 0xC7EA Command: 0x19 == up arrow
+        else if (IrReceiver.decodedIRData.protocol == NEC &&
+                 IrReceiver.decodedIRData.address == 0xC7EA &&
+                 IrReceiver.decodedIRData.command == 0x19) {
+            Serial.println("IR: Up arrow pressed");
+            // assign current mac address if connected to a device to lane 2
+            setMacLane(2);
+        }
+        // 0xC7EA Command: 0x33 == down arrow
+        else if (IrReceiver.decodedIRData.protocol == NEC &&
+                 IrReceiver.decodedIRData.address == 0xC7EA &&
+                 IrReceiver.decodedIRData.command == 0x33) {
+            Serial.println("IR: Down arrow pressed");
+            setMacLane(1);
+        }
+        IrReceiver.resume();
+    }
+}
+
 void loop() {
   // Handle serial communication for API level queries
   if (Serial.available() > 0) {
@@ -694,6 +763,8 @@ void loop() {
     BLE.advertise();
     // Optional: Serial.println("Ensuring BLE advertising (loop watchdog)");
   }
+
+  checkIRRemote();
   
   // LED display is updated automatically when routes are received
   // No need for continuous updates unless you want animations
