@@ -36,8 +36,8 @@
 #define DISPLAY_NAME "Tension Board 2"
 #define API_LEVEL 3
 
-// Feature toggle: Set to true for dual-route functionality, false for basic single-route mode
-#define DUAL_ROUTE_MODE false
+// Add runtime mode variable
+bool dualRouteMode = false; // false = single route, true = dual route
 
 // Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
 #define CONTINUOUS_ADVERTISING true
@@ -73,12 +73,9 @@ BLECharacteristic notifyCharacteristic(NOTIFY_CHARACTERISTIC, BLENotify | BLERea
 bool deviceConnected = false;
 
 // Global route storage for LED display
-#if DUAL_ROUTE_MODE
 std::vector<Hold> route1Holds;     // First route storage
 std::vector<Hold> route2Holds;     // Second route storage
-#else
 std::vector<Hold> currentHolds;    // Single route storage
-#endif
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -303,27 +300,27 @@ void updateLEDDisplay() {
     // Clear all LEDs first
     clearAllLEDs();
     
-    #if DUAL_ROUTE_MODE
-    // Dual route mode: Display both routes
-    int totalLEDs = 0;
-    if (!route1Holds.empty()) {
-        displayRoute(route1Holds);
-        totalLEDs += route1Holds.size();
+    if (dualRouteMode) {
+        // Dual route mode: Display both routes
+        int totalLEDs = 0;
+        if (!route1Holds.empty()) {
+            displayRoute(route1Holds);
+            totalLEDs += route1Holds.size();
+        }
+        if (!route2Holds.empty()) {
+            displayRoute(route2Holds);
+            totalLEDs += route2Holds.size();
+        }
+        Serial.print("LED Display Updated - Total LEDs lit: ");
+        Serial.println(totalLEDs);
+    } else {
+        // Basic mode: Display single route
+        if (!currentHolds.empty()) {
+            displayRoute(currentHolds);
+            Serial.print("LED Display Updated - LEDs lit: ");
+            Serial.println(currentHolds.size());
+        }
     }
-    if (!route2Holds.empty()) {
-        displayRoute(route2Holds);
-        totalLEDs += route2Holds.size();
-    }
-    Serial.print("LED Display Updated - Total LEDs lit: ");
-    Serial.println(totalLEDs);
-    #else
-    // Basic mode: Display single route
-    if (!currentHolds.empty()) {
-        displayRoute(currentHolds);
-        Serial.print("LED Display Updated - LEDs lit: ");
-        Serial.println(currentHolds.size());
-    }
-    #endif
     
     FastLED.show();
 }
@@ -398,9 +395,7 @@ void onBLEDisconnected(BLEDevice central) {
 
 // State management for climbing routes
 std::vector<Hold> tempHolds;       // Temporary storage for incoming route
-#if DUAL_ROUTE_MODE
-bool activeRoute = true;           // true = route1, false = route2
-#endif
+bool activeRoute = true; // Always present, used only in dual mode
 bool isNewClimb = true;            // Flag to track if this is a new climb sequence
 std::vector<uint8_t> packetBuffer; // Buffer for incomplete packets (handles fragmentation)
 
@@ -408,6 +403,19 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
     // Get written data
     const uint8_t* data = characteristic.value();
     int length = characteristic.valueLength();
+
+    // Check for BLE command to toggle mode (single ASCII 'X' or 'x')
+    if (length == 1 && (data[0] == 'X' || data[0] == 'x')) {
+        dualRouteMode = !dualRouteMode;
+        Serial.print("Dual Route Mode toggled. Now: ");
+        Serial.println(dualRouteMode ? "DUAL" : "SINGLE");
+        // Clear all routes when switching modes for consistency
+        route1Holds.clear();
+        route2Holds.clear();
+        currentHolds.clear();
+        updateLEDDisplay();
+        return;
+    }
     
     if (length > 0) {
         // Debug output: Show raw received bytes
@@ -469,11 +477,11 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // Handle route state management
             // 'T' packets indicate a new test route, clear previous holds
             if (packetTypeChar == 'T') {
-                #if DUAL_ROUTE_MODE
-                tempHolds.clear();  // Clear temporary storage for new route
-                #else
-                currentHolds.clear();  // Basic mode: clear current route
-                #endif
+                if (dualRouteMode) {
+                    tempHolds.clear();  // Clear temporary storage for new route
+                } else {
+                    currentHolds.clear();  // Basic mode: clear current route
+                }
                 isNewClimb = true;
             }
             
@@ -508,11 +516,11 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     
                     // Store hold information
                     Hold h = {position, r, g, b, colorName};
-                    #if DUAL_ROUTE_MODE
-                    tempHolds.push_back(h);
-                    #else
-                    tempHolds.push_back(h);
-                    #endif
+                    if (dualRouteMode) {
+                        tempHolds.push_back(h);
+                    } else {
+                        tempHolds.push_back(h);
+                    }
                     
                     // Debug output: Show decoded hold
                     Serial.print("Hold at position "); Serial.print(position);
@@ -527,62 +535,64 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // Route completion handling
             // 'S' (Set) and 'T' (Test) packets indicate complete route transmission
             if (packetTypeChar == 'S' || packetTypeChar == 'T') {
-                #if DUAL_ROUTE_MODE
-                // Dual route mode: Store completed route and alternate between route slots
-                if (activeRoute) {
-                    // Route 1: Apply principal color scheme
-                    route1Holds = tempHolds;
-                    for (Hold& h : route1Holds) {
-                        h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
-                        applyPrincipalColors(h.colorName, h.r, h.g, h.b);  // Apply principal colors
+                if (dualRouteMode) {
+                    // Dual route mode: Store completed route and alternate between route slots
+                    if (activeRoute) {
+                        // Clear and store Route 1
+                        route1Holds.clear();
+                        route1Holds = tempHolds;
+                        for (Hold& h : route1Holds) {
+                            h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
+                            applyPrincipalColors(h.colorName, h.r, h.g, h.b);  // Apply principal colors
+                        }
+                        Serial.println("\nRoute 1 stored (principal colors):");
+                    } else {
+                        // Clear and store Route 2
+                        route2Holds.clear();
+                        route2Holds = tempHolds;
+                        for (Hold& h : route2Holds) {
+                            h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
+                            applyAltColors(h.colorName, h.r, h.g, h.b);  // Apply alternative colors
+                        }
+                        Serial.println("\nRoute 2 stored (alternative colors):");
                     }
-                    Serial.println("\nRoute 1 stored (principal colors):");
+                    
+                    // Show the route that was just stored
+                    for (const Hold& h : tempHolds) {
+                        Serial.print("Position "); Serial.print(h.position);
+                        Serial.print(": "); Serial.println(h.colorName);
+                    }
+                    
+                    // Toggle to next route slot for the next sequence
+                    activeRoute = !activeRoute;
+                    
+                    // Show complete dual route summary
+                    Serial.println("\n=== DUAL ROUTE SUMMARY ===");
+                    if (!route1Holds.empty()) {
+                        Serial.println("Route 1:");
+                        for (const Hold& h : route1Holds) {
+                            Serial.print("  Position "); Serial.print(h.position);
+                            Serial.print(": "); Serial.println(h.colorName);
+                        }
+                    }
+                    if (!route2Holds.empty()) {
+                        Serial.println("Route 2:");
+                        for (const Hold& h : route2Holds) {
+                            Serial.print("  Position "); Serial.print(h.position);
+                            Serial.print(": "); Serial.println(h.colorName);
+                        }
+                    }
+                    Serial.println("========================");
                 } else {
-                    // Route 2: Apply alternative color scheme
-                    route2Holds = tempHolds;
-                    for (Hold& h : route2Holds) {
-                        h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
-                        applyAltColors(h.colorName, h.r, h.g, h.b);  // Apply alternative colors
-                    }
-                    Serial.println("\nRoute 2 stored (alternative colors):");
-                }
-                
-                // Show the route that was just stored
-                for (const Hold& h : tempHolds) {
-                    Serial.print("Position "); Serial.print(h.position);
-                    Serial.print(": "); Serial.println(h.colorName);
-                }
-                
-                // Toggle to next route slot for the next sequence
-                activeRoute = !activeRoute;
-                
-                // Show complete dual route summary
-                Serial.println("\n=== DUAL ROUTE SUMMARY ===");
-                if (!route1Holds.empty()) {
-                    Serial.println("Route 1:");
-                    for (const Hold& h : route1Holds) {
-                        Serial.print("  Position "); Serial.print(h.position);
+                    // Single route mode: Store route from tempHolds to currentHolds
+                    currentHolds.clear();
+                    currentHolds = tempHolds;
+                    Serial.println("\nComplete climb summary:");
+                    for (const Hold& h : currentHolds) {
+                        Serial.print("Position "); Serial.print(h.position);
                         Serial.print(": "); Serial.println(h.colorName);
                     }
                 }
-                if (!route2Holds.empty()) {
-                    Serial.println("Route 2:");
-                    for (const Hold& h : route2Holds) {
-                        Serial.print("  Position "); Serial.print(h.position);
-                        Serial.print(": "); Serial.println(h.colorName);
-                    }
-                }
-                Serial.println("========================");
-                
-                #else
-                // Basic mode: Store route from tempHolds to currentHolds
-                currentHolds = tempHolds;
-                Serial.println("\nComplete climb summary:");
-                for (const Hold& h : currentHolds) {
-                    Serial.print("Position "); Serial.print(h.position);
-                    Serial.print(": "); Serial.println(h.colorName);
-                }
-                #endif
                 
                 // Clear temporary storage for next route
                 tempHolds.clear();
