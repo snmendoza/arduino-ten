@@ -33,12 +33,14 @@
  * 
  * USE CASE: Indoor climbing training with app-controlled route lighting
  */
-
+// macbook macs
+// 60:3e:5f:34:cd:92
 #define DISPLAY_NAME "Tension Board 2"
 #define API_LEVEL 3
 
 // Add runtime mode variable
 bool dualRouteMode = false; // false = single route, true = dual route
+bool currentLane = 0;
 
 // Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
 #define CONTINUOUS_ADVERTISING true
@@ -65,14 +67,6 @@ struct Hold {
     String colorName;
 };
 
-struct MacLanePair {
-    String mac;
-    int lane;
-};
-
-MacLanePair macLaneList[100]; // Up to 100 players
-int macLaneCount = 0;
-
 
 
 CRGB leds[NUM_LEDS];
@@ -90,39 +84,6 @@ std::vector<Hold> route1Holds;     // First route storage
 std::vector<Hold> route2Holds;     // Second route storage
 std::vector<Hold> currentHolds;    // Single route storage
 
-// set mac address of current device (if connected to a device) to lane
-// if already in list, assign lane
-// if not in list, add to list
-void setMacLane(int lane) {
-    if (!deviceConnected) return;
-    
-    String mac = BLE.address();
-    
-    // Check if MAC address already exists in list
-    for (int i = 0; i < macLaneCount; ++i) {
-        if (macLaneList[i].mac == mac) {
-            macLaneList[i].lane = lane;
-            Serial.print("Mac ");
-            Serial.print(mac);
-            Serial.print(" set to lane ");
-            Serial.println(lane);
-            return;
-        }
-    }
-    
-    // MAC not found, add new entry if there's space
-    if (macLaneCount < 100) {
-        macLaneList[macLaneCount++] = {mac, lane};
-        Serial.print("Mac ");
-        Serial.print(mac);
-        Serial.print(" added to lane ");
-        Serial.println(lane);
-    } else {
-        Serial.println("Mac lane list full");
-    }
-}
-
-
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
     r = ((colorByte >> 5) & 0x07) * 255 / 7;  // 3 bits for red
@@ -135,7 +96,7 @@ String getColorName(uint8_t r, uint8_t g, uint8_t b) {
     if (r > 200 && g < 50 && b < 50) return "Red";
     if (r < 50 && g > 200 && b < 50) return "Green";
     if (r < 50 && g < 50 && b > 200) return "Blue";
-    if (r > 200 && g < 50 && b > 200) return "Pink";
+    if (r > 50 && g < 50 && b > 200) return "Pink";
     if (r > 200 && g > 200 && b < 50) return "Yellow";
     if (r > 200 && g > 200 && b > 200) return "White";
     if (r < 50 && g < 50 && b < 50) return "Black";
@@ -158,13 +119,21 @@ uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
 // Red	(255, 25, 25)	#FF3232	Bright scarlet
 void applyPrincipalColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
     colorName.toLowerCase();  // Case-insensitive comparison
-    if (colorName == "green") { r = 0; g = 255; b = 30; }
-    else if (colorName == "blue") { r = 50; g = 50; b = 255; }
-    else if (colorName == "purple" || colorName == "pink") { r = 150; g = 0; b = 255; }
+    if (colorName == "green") { r = 0; g = 255; b = 00; }
+    else if (colorName == "blue") { r = 00; g = 00; b = 255; }
+    else if (colorName == "purple" || colorName == "pink") { r = 100; g = 0; b = 255; }
     else if (colorName == "red") { r = 255; g = 0; b = 0; }
     else if (colorName == "yellow") { r = 255; g = 255; b = 100; }  // Add yellow support
     else if (colorName == "white") { r = 255; g = 255; b = 255; }  // Add white support
-    // If unknown color, keep original values
+    //if unkow, print  color rgb
+    else {
+        Serial.print("Unknown color: ");
+        Serial.print(r);
+        Serial.print(", ");
+        Serial.print(g);
+        Serial.print(", ");
+        Serial.println(b);
+    }
 }
 
 // Helper function to apply alternative colors (Route 2)
@@ -174,12 +143,12 @@ void applyPrincipalColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) 
 // Red	to (255, 100, 0)	#FF6400	Vivid orange-red
 void applyAltColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
     colorName.toLowerCase();  // Case-insensitive comparison
-    if (colorName == "green") { r = 100; g = 255; b = 0; }
-    else if (colorName == "blue") { r = 0; g = 200; b = 255; }
-    else if (colorName == "purple" || colorName == "pink") { r = 255; g = 0; b = 100; }
-    else if (colorName == "red") { r = 255; g = 100; b = 0; }
-    else if (colorName == "yellow") { r = 200; g = 255; b = 0; }  // Add yellow support
-    else if (colorName == "white") { r = 255; g = 200; b = 200; }  // Add white support
+    if (colorName == "green") { r = 50; g = 255; b = 100; }
+    else if (colorName == "blue") { r = 0; g = 220; b = 255; }
+    else if (colorName == "purple" || colorName == "pink") { r = 225; g = 255; b = 255; }
+    else if (colorName == "red") { r = 250; g = 150; b = 0; }
+    else if (colorName == "yellow") { r = 200; g = 100; b = 100; }  // Add yellow support
+    else if (colorName == "white") { r = 200; g = 200; b = 200; }  // Add white support
     // If unknown color, keep original values
 }
 
@@ -371,16 +340,34 @@ void updateLEDDisplay() {
     FastLED.show();
 }
 
+// Add this function near other utility functions
+void clearBoardExceptRoute1() {
+    dualRouteMode = false;         // Switch to single mode
+    //tempHolds.clear();
+    for (int i = 0; i < 3; i++) { // repeat a bunch because apparently that works
+        route2Holds.clear();           // Clear route 2
+        currentHolds.clear();          // Clear current single route
+        currentLane = 0;               // Reset lane state (optional)
+        if (!route1Holds.empty()) {
+            currentHolds = route1Holds;    // Only copy if not empty
+        }
+        updateLEDDisplay();            // Refresh LEDs to show only route1 if present
+    }
+    Serial.print("[INFO] Cleared board except route1, now in single mode. route1Holds size: ");
+    Serial.print(route1Holds.size());
+    Serial.print(", currentHolds size: ");
+    Serial.println(currentHolds.size());
+}
+
 // BLE event handlers for ArduinoBLE
 void onBLEConnected(BLEDevice central) {
     deviceConnected = true;
     Serial.print("Device connected: ");
     Serial.println(central.address());
-    
+    //Serial.println(central.localName());
     #if CONTINUOUS_ADVERTISING
     // Continue advertising to allow immediate device switching
     BLE.advertise();
-    Serial.println("Ready for next user - staying visible for seamless handoff");
     #endif
 }
 
@@ -406,7 +393,6 @@ void onBLEDisconnected(BLEDevice central) {
     dataTransferCharacteristic.setEventHandler(BLEWritten, onDataTransferCharacteristicWritten);
     BLE.setAdvertisedService(advertisingService);
     BLE.advertise();
-    Serial.println("Resumed BLE advertising for new connections (BLE stack restarted)");
 }
 
 /*
@@ -453,7 +439,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
     // Check for BLE command to toggle mode (single ASCII 'X' or 'x')
     if (length == 1 && (data[0] == 'X' || data[0] == 'x')) {
         dualRouteMode = !dualRouteMode;
-        Serial.print("Dual Route Mode toggled. Now: ");
+        Serial.print("Mode toggled. Now: ");
         Serial.println(dualRouteMode ? "DUAL" : "SINGLE");
         // Clear all routes when switching modes for consistency
         route1Holds.clear();
@@ -463,9 +449,20 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
         return;
     }
     
+    // Check for lane command from web app (e.g., 'L1' or 'L2')
+    if (length == 2 && data[0] == 'L' && (data[1] == '1' || data[1] == '2')) {
+        int lane = (data[1] == '1') ? 0 : 1;
+        currentLane = lane;
+        Serial.print("[BLE] Lane set by command: ");
+        Serial.println(lane);
+        return; // Done processing this command
+    }
+
     if (length > 0) {
         // Debug output: Show raw received bytes
-        Serial.print("Received command: ");
+        Serial.print("Received command from ");
+        Serial.print(BLE.address());
+        Serial.print(": ");
         for (int i = 0; i < length; i++) {
           Serial.print((int)data[i]);
           Serial.print(" ");
@@ -541,7 +538,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             uint8_t receivedChecksum = packetBuffer[startIdx + 2];
             
             // Debug output: Show packet details
-            Serial.println("\nDecoded packet:");
+            Serial.print("\n___________________Decoded packet (at millis: "); Serial.print(millis()); Serial.println(")___________________");
             Serial.print("Length: "); Serial.println(packetLength);
             Serial.print("Checksum: "); Serial.println(receivedChecksum);
             Serial.print("Calculated checksum: "); Serial.println(calculatedChecksum);
@@ -569,12 +566,12 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     }
                     
                     // Debug output: Show decoded hold
-                    Serial.print("Hold at position "); Serial.print(position);
-                    Serial.print(" with color "); Serial.print(colorName);
-                    Serial.print(" RGB("); Serial.print(r);
-                    Serial.print(","); Serial.print(g);
-                    Serial.print(","); Serial.print(b);
-                    Serial.println(")");
+                   //ition "); Serial.print(position);
+                    //Serial.print(" with color "); Serial.print(colorName);
+                    //Serial.print(" RGB("); Serial.print(r);
+                    //Serial.print(","); Serial.print(g);
+                    //Serial.print(","); Serial.print(b);
+                    //Serial.println(")");
                 }
             }
             
@@ -582,26 +579,8 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // 'S' (Set) and 'T' (Test) packets indicate complete route transmission
             if (packetTypeChar == 'S' || packetTypeChar == 'T') {
                 if (dualRouteMode) {
-                    // Dual route mode: Store completed route and alternate between route slots
-                    // in dual route mode, if the connected mac address has a lane, apply route to that lane, lane 1 == principal colors, lane 2 == alternative colors
-                    // logic: if device connected
-                        // if has lane assignment
-                            // lane 1 => route1/principal colors
-                            // lane 2 => route2/alternative colors
-                    if (deviceConnected) {
-                        for (int i = 0; i < macLaneCount; ++i) {
-                            if (macLaneList[i].mac == BLE.address()) {
-                                int lane = macLaneList[i].lane;
-                                if (lane == 1) {
-                                    activeRoute = true;
-                                } else if (lane == 2) {
-                                    activeRoute = false;
-                                }
-                            }
-                        }
-                    }
-                    if (activeRoute) {
-                        // Clear and store Route 1
+                    if (currentLane == 0) {
+                        // Always clear both routes before assigning new holds
                         route1Holds.clear();
                         route1Holds = tempHolds;
                         for (Hold& h : route1Holds) {
@@ -609,8 +588,8 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                             applyPrincipalColors(h.colorName, h.r, h.g, h.b);  // Apply principal colors
                         }
                         Serial.println("\nRoute 1 stored (principal colors):");
-                    } else {
-                        // Clear and store Route 2
+                    } else if (currentLane == 1) {
+                        // Always clear both routes before assigning new holds
                         route2Holds.clear();
                         route2Holds = tempHolds;
                         for (Hold& h : route2Holds) {
@@ -619,6 +598,15 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                         }
                         Serial.println("\nRoute 2 stored (alternative colors):");
                     }
+                    // Debug: Print state after updating routes
+                    Serial.print("[DEBUG] After update: activeRoute=");
+                    Serial.print(activeRoute);
+                    Serial.print(" | route1Holds size=");
+                    Serial.print(route1Holds.size());
+                    Serial.print(" | route2Holds size=");
+                    Serial.print(route2Holds.size());
+                    Serial.print(" | tempHolds size=");
+                    Serial.println(tempHolds.size());
                     
                     // Show the route that was just stored
                     for (const Hold& h : tempHolds) {
@@ -627,7 +615,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     }
                     
                     // Toggle to next route slot for the next sequence
-                    activeRoute = !activeRoute;
+                    currentLane = !currentLane;
                     
                     // Show complete dual route summary
                     Serial.println("\n=== DUAL ROUTE SUMMARY ===");
@@ -650,11 +638,12 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     // Single route mode: Store route from tempHolds to currentHolds
                     currentHolds.clear();
                     currentHolds = tempHolds;
-                    Serial.println("\nComplete climb summary:");
-                    for (const Hold& h : currentHolds) {
-                        Serial.print("Position "); Serial.print(h.position);
-                        Serial.print(": "); Serial.println(h.colorName);
-                    }
+                    //debug: print complete climb summary
+                    //Serial.println("\nComplete climb summary:");
+                    //for (const Hold& h : currentHolds) {
+                    //    Serial.print("Position "); Serial.print(h.position);
+                    //    Serial.print(": "); Serial.println(h.colorName);
+                    //}
                 }
                 
                 // Clear temporary storage for next route
@@ -760,22 +749,28 @@ void checkIRRemote() {
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x19) {
             Serial.println("IR: Up arrow pressed");
-            // assign current mac address if connected to a device to lane 2
-            setMacLane(2);
+            currentLane = !currentLane;
         }
         // 0xC7EA Command: 0x33 == down arrow
         else if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x33) {
             Serial.println("IR: Down arrow pressed");
-            setMacLane(1);
+            currentLane = !currentLane;
         }
-        // 0xC7EA Command: 0x78 => return, clear lane assignment
+        //0xC7EA Command: 0x3 == home button, go to single mode, keep route 1
+        else if (IrReceiver.decodedIRData.protocol == NEC &&
+                 IrReceiver.decodedIRData.address == 0xC7EA &&
+                 IrReceiver.decodedIRData.command == 0x3) {
+            Serial.println("IR: Home pressed");
+            clearBoardExceptRoute1();
+        }
+        // 0xC7EA Command: 0x78 => return/back button, switch current lane
         else if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x78) {
             Serial.println("IR: Return pressed");
-            setMacLane(0);
+            currentLane = !currentLane;
         }
         IrReceiver.resume();
     }
