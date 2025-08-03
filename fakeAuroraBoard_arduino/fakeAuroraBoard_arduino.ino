@@ -39,7 +39,7 @@
 #define API_LEVEL 3
 
 // Add runtime mode variable
-bool dualRouteMode = false; // false = single route, true = dual route
+bool dualRouteMode = true; // false = single route, true = dual route
 bool currentLane = 0;
 
 // Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
@@ -82,6 +82,10 @@ bool deviceConnected = false;
 // Global route storage for LED display
 std::vector<Hold> route1Holds;     // First route storage
 std::vector<Hold> route2Holds;     // Second route storage
+std::vector<Hold> route1HoldsLast;     // First route storage for last route(history)
+std::vector<Hold> route2HoldsLast;     // Second route storage for last route(history)
+bool route1On = true;
+bool route2On = true;
 std::vector<Hold> currentHolds;    // Single route storage
 
 // Helper function to decode RGB color from API level 3 format
@@ -314,7 +318,7 @@ void startupLEDs() {
 void updateLEDDisplay() {
     // Clear all LEDs first
     clearAllLEDs();
-    
+    //in dual route mode, always display both routes
     if (dualRouteMode) {
         // Dual route mode: Display both routes
         int totalLEDs = 0;
@@ -342,7 +346,7 @@ void updateLEDDisplay() {
 
 // Add this function near other utility functions
 void clearBoardExceptRoute1() {
-    dualRouteMode = false;         // Switch to single mode
+    dualRouteMode = true;         
     //tempHolds.clear();
     for (int i = 0; i < 3; i++) { // repeat a bunch because apparently that works
         route2Holds.clear();           // Clear route 2
@@ -357,6 +361,56 @@ void clearBoardExceptRoute1() {
     Serial.print(route1Holds.size());
     Serial.print(", currentHolds size: ");
     Serial.println(currentHolds.size());
+}
+
+// toggle route visibility
+// place holds in history, clear current route, or retrieve last route from history
+void toggleRouteVisibility() {
+    if (currentLane == 0) {
+        // if on, turn off, send data to holds last
+        if (route1On) {
+            route1On = false;
+            route1HoldsLast = route1Holds; // save current route to history
+            for (int i = 0; i < 2; i++) { // repeat a bunch because apparently that works
+                route1Holds.clear();           // Clear route 1
+                currentHolds.clear();          // Clear current holds
+                updateLEDDisplay();
+            }
+        } else {
+            //if off, turn on, retrieve last route from history
+            route1On = true;
+            route1Holds = route1HoldsLast; // restore route from history
+            for (int i = 0; i < 2; i++) { // repeat a bunch because apparently that works
+                route1HoldsLast.clear();           // Clear history
+                currentHolds.clear();          // Clear current single route
+                updateLEDDisplay();
+            }
+        }
+    } else if (currentLane == 1) {
+        if (route2On) {
+            route2On = false;
+            route2HoldsLast = route2Holds; // save current route to history
+            for (int i = 0; i < 2; i++) { // repeat a bunch because apparently that works
+                route2Holds.clear();           // Clear route 2
+                currentHolds.clear();          // Clear current single route
+               updateLEDDisplay();
+            }
+        } else {
+            route2On = true;
+            route2Holds = route2HoldsLast; // restore route from history
+            for (int i = 0; i < 2; i++) { // repeat a bunch because apparently that works
+                route2HoldsLast.clear();           // Clear history
+                currentHolds.clear();          // Clear current holds
+                updateLEDDisplay();
+            }
+        }
+    }
+
+    updateLEDDisplay();
+    Serial.print("[INFO] Toggled route visibility. route1Holds size: ");
+    Serial.print(route1Holds.size());
+    Serial.print(", route2Holds size: ");
+    Serial.println(route2Holds.size());
 }
 
 // BLE event handlers for ArduinoBLE
@@ -555,10 +609,11 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     uint8_t r, g, b;
                     decodeColor(packetBuffer[i+2], r, g, b);
                     String colorName = getColorName(r, g, b);
-                    applyPrincipalColors(colorName, r, g, b);
-                    
                     // Store hold information
                     Hold h = {position, r, g, b, colorName};
+                    // always store as original
+                    applyPrincipalColors(colorName, r, g, b);
+                    
                     if (dualRouteMode) {
                         tempHolds.push_back(h);
                     } else {
@@ -614,8 +669,8 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                         Serial.print(": "); Serial.println(h.colorName);
                     }
                     
-                    // Toggle to next route slot for the next sequence
-                    currentLane = !currentLane;
+                    // dont toggle, only toggle via remote
+                   // currentLane = !currentLane;
                     
                     // Show complete dual route summary
                     Serial.println("\n=== DUAL ROUTE SUMMARY ===");
@@ -749,14 +804,14 @@ void checkIRRemote() {
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x19) {
             Serial.println("IR: Up arrow pressed");
-            currentLane = !currentLane;
+            currentLane = 1;
         }
         // 0xC7EA Command: 0x33 == down arrow
         else if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x33) {
             Serial.println("IR: Down arrow pressed");
-            currentLane = !currentLane;
+            currentLane = 0;
         }
         //0xC7EA Command: 0x3 == home button, go to single mode, keep route 1
         else if (IrReceiver.decodedIRData.protocol == NEC &&
@@ -771,6 +826,15 @@ void checkIRRemote() {
                  IrReceiver.decodedIRData.command == 0x78) {
             Serial.println("IR: Return pressed");
             currentLane = !currentLane;
+        }
+        //0x17 ==> power button, empty current lane, or return last route to current lane   
+        // if routeXHolds is empty, send routeXHoldsLast to routeXHolds
+        // if routeXHolds is not emtpy, copy to routeXHoldsLast, then clear routeXHolds
+        else if (IrReceiver.decodedIRData.protocol == NEC &&
+                 IrReceiver.decodedIRData.address == 0xC7EA &&
+                 IrReceiver.decodedIRData.command == 0x17) {
+            Serial.println("IR: Power pressed");
+            toggleRouteVisibility();
         }
         IrReceiver.resume();
     }
