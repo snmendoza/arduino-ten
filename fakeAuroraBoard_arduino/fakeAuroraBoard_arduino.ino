@@ -1,5 +1,6 @@
 #include <ArduinoBLE.h>
 #include <vector>
+#define FASTLED_ALLOW_INTERRUPTS 0
 #include <FastLED.h>
 #include <tuple>
 #include <IRremote.h>
@@ -48,7 +49,7 @@ bool currentLane = 0;
 #define NOTIFY_CHARACTERISTIC "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"  // Notify characteristic
 
 #define LED_PIN 13  // LED pin for Arduino R4 WiFi (changed from 25 to 13)
-#define NUM_LEDS 500  // Replace with the number of LEDs in your strip
+#define NUM_LEDS 478  // Replace with the number of LEDs in your strip
 #define DELAY_TIME 10  // Delay between LED movements (in milliseconds)
 
 #define IR_RECEIVE_PIN 9  // Define the IR receiver pin
@@ -192,8 +193,8 @@ void setBoardLEDs(const std::vector<Hold>& boardState) {
     
     // Clear all LEDs first
     FastLED.clear();
-    FastLED.show();
-    FastLED.delay(100);
+    //FastLED.show();
+    FastLED.delay(5);
     // Set new LED values
     for (const Hold& hold : boardState) {
         if (hold.position < NUM_LEDS) {  // Safety check
@@ -203,8 +204,38 @@ void setBoardLEDs(const std::vector<Hold>& boardState) {
     
     // Update the physical LEDs with minimal delay
     FastLED.show();
-    FastLED.delay(50);  // Much shorter delay
+    FastLED.delay(5);  // Much shorter delay
     FastLED.show();
+}
+
+
+// mirror current problem horizontally
+// 1. compute position within column
+// 2. compute column
+// 3. calculate new column
+// 4. calculate new position
+int mirrorPosition(int pos) {
+    int remainder = pos % 29; // position within column
+    int col = (pos - remainder) / 29; // index of column location
+    int new_col = 16 - col;
+    if (remainder > 14) {
+        new_col -= 1;
+    }
+    int new_position = new_col * 29 + remainder;
+    return new_position;
+}
+
+void mirrorCurrentLane() {
+    if (currentLane == 0) {
+        for (size_t i = 0; i < route1Holds.size(); i++) {
+            route1Holds[i].position = mirrorPosition(route1Holds[i].position);
+        }
+    } else {
+        for (size_t i = 0; i < route2Holds.size(); i++) {
+            route2Holds[i].position = mirrorPosition(route2Holds[i].position);
+        }
+    }
+    updateBoardState(); // Update the display after mirroring
 }
 
 // on startup, show this sequence
@@ -722,12 +753,12 @@ void checkIRRemote() {
             Serial.println("IR: Home pressed");
             clearBoardExceptRoute1();
         }
-        // 0xC7EA Command: 0x78 => return/back button, switch current lane
+        // 0xC7EA Command: 0x78 => return/back button, mirror current lane route
         else if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x78) {
-            Serial.println("IR: Return pressed");
-            currentLane = !currentLane;
+            Serial.println("IR: Return pressed, mirroring current lane");
+            mirrorCurrentLane();
         }
         //0x17 ==> power button, toggle visibility of current lane
         else if (IrReceiver.decodedIRData.protocol == NEC &&
