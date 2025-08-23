@@ -5,7 +5,7 @@
 #include <IRremote.h>
 
 /*/Users/SeanMacbook/Documents/Arduino/sketch_may10IRRemote2/ReceiveDump/ReceiveDump.inopin
- * FAKE AURORA BOARD - Arduino R4 WiFi Climbing Training Board Simulator
+ * Run tension board receiver on arduino r4
  * =====================================================================
  * 
  * PURPOSE: Simulates an Aurora Board climbing training device using Arduino R4 WiFi + LED strip
@@ -23,23 +23,19 @@
  * FUNCTIONALITY:
  * - Receives climbing route data via BLE packets
  * - Displays routes as colored LEDs on strip
- * - Two modes: Basic (single route) or Dual (two routes simultaneously)
- * - Dual mode uses green-biased colors for route differentiation
+ * - always in dual route mode, where each route can be toggled on and off via IR remote
+ * - Second route used alternative colors for route differentiation
  * 
  * DATA FORMAT:
  * - Packets: [START][LENGTH][CHECKSUM][TYPE_MARKER][PACKET_TYPE][HOLD_DATA...][END]
  * - Hold data: 3 bytes per hold (position_low, position_high, color_encoded)
  * - Colors: 8-bit compressed RGB (3R:3G:2B bits)
- * 
- * USE CASE: Indoor climbing training with app-controlled route lighting
  */
-// macbook macs
-// 60:3e:5f:34:cd:92
+
 #define DISPLAY_NAME "Tension Board 2"
 #define API_LEVEL 3
 
 // Add runtime mode variable
-bool dualRouteMode = true; // false = single route, true = dual route
 bool currentLane = 0;
 
 // Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
@@ -67,9 +63,8 @@ struct Hold {
     String colorName;
 };
 
-
-
 CRGB leds[NUM_LEDS];
+
 
 // ArduinoBLE objects (different from ESP32 BLE)
 BLEService advertisingService(ADVERTISING_SERVICE_UUID);
@@ -86,7 +81,6 @@ std::vector<Hold> route1HoldsLast;     // First route storage for last route(his
 std::vector<Hold> route2HoldsLast;     // Second route storage for last route(history)
 bool route1On = true;
 bool route2On = true;
-std::vector<Hold> currentHolds;    // Single route storage
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -106,7 +100,6 @@ String getColorName(uint8_t r, uint8_t g, uint8_t b) {
     if (r < 50 && g < 50 && b < 50) return "Black";
     return "Unknown";
 }
-
 // Helper function to calculate checksum
 uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
     uint8_t sum = 0;
@@ -156,37 +149,64 @@ void applyAltColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
     // If unknown color, keep original values
 }
 
-/*
- * LED Control System
- * 
- * Controls a WS2811 LED strip of 500 LEDs connected to pin 13.
- * Each hold position corresponds to an LED index (0-499).
- * 
- * Basic Mode: Displays single route with original colors
- * Dual Mode: Displays both routes simultaneously
- *   - Route 1: Original colors
- *   - Route 2: Green-biased colors
- * 
- * LEDs are updated automatically when complete routes are received.
- */
-
-// LED Control Functions
-// Clear all LEDs to black
-void clearAllLEDs() {
-    for (int i = 0; i < NUM_LEDS; i++) {
-        leds[i] = CRGB::Black;
+//combines both route data into one vector, where data are overlapping (eg route 1 and 2 both have a hold at position 100), 
+// route 1 takes priority, route 2 is overwritten
+void updateBoardState() {
+    // both off, just clear
+    if (!route1On && !route2On) {
+        noInterrupts();
+        FastLED.clear();
+        FastLED.show();
+        FastLED.delay(5);  // Much shorter delay
+        FastLED.show();
+        interrupts();
+        return;
     }
-    FastLED.show();
+    
+    // if only one route is on, send it to the board    
+    if (route1On && !route2On) {
+        noInterrupts();
+        setBoardLEDs(route1Holds);
+        interrupts();
+    }
+    else if (route2On && !route1On) {
+        noInterrupts();
+        setBoardLEDs(route2Holds);
+        interrupts();
+    }
+    // if both routes are on, calculate union of both routes
+    else if (route1On && route2On) {
+        // start with an empty vector, all values being black
+        std::vector<Hold> boardState;
+        boardState.insert(boardState.end(), route1Holds.begin(), route1Holds.end());
+        boardState.insert(boardState.end(), route2Holds.begin(), route2Holds.end());
+        noInterrupts();
+        setBoardLEDs(boardState);
+        interrupts();
+    }
 }
 
-// Display a single route on the LED strip
-void displayRoute(const std::vector<Hold>& route) {
-    for (const Hold& hold : route) {
+// interpret a full board state vector, and displays it to the LEDs
+void setBoardLEDs(const std::vector<Hold>& boardState) {
+    // Disable interrupts during critical LED operations
+    
+    // Clear all LEDs first
+    FastLED.clear();
+    FastLED.show();
+    FastLED.delay(100);
+    // Set new LED values
+    for (const Hold& hold : boardState) {
         if (hold.position < NUM_LEDS) {  // Safety check
             leds[hold.position] = CRGB(hold.r, hold.g, hold.b);
         }
     }
+    
+    // Update the physical LEDs with minimal delay
+    FastLED.show();
+    FastLED.delay(50);  // Much shorter delay
+    FastLED.show();
 }
+
 // on startup, show this sequence
 // smoothly cycles through spectrum colors equivalent to 400nm to 700nm, taking 5 seconds to complete
 // at each time step the entire board is a single color, slowly changing to the next
@@ -314,103 +334,39 @@ void startupLEDs() {
 
 }
 
-// Update LED display based on current mode
-void updateLEDDisplay() {
-    // Clear all LEDs first
-    clearAllLEDs();
-    //in dual route mode, always display both routes
-    if (dualRouteMode) {
-        // Dual route mode: Display both routes
-        int totalLEDs = 0;
-        if (!route1Holds.empty()) {
-            displayRoute(route1Holds);
-            totalLEDs += route1Holds.size();
-        }
-        if (!route2Holds.empty()) {
-            displayRoute(route2Holds);
-            totalLEDs += route2Holds.size();
-        }
-        Serial.print("LED Display Updated - Total LEDs lit: ");
-        Serial.println(totalLEDs);
-    } else {
-        // Basic mode: Display single route
-        if (!currentHolds.empty()) {
-            displayRoute(currentHolds);
-            Serial.print("LED Display Updated - LEDs lit: ");
-            Serial.println(currentHolds.size());
-        }
-    }
-    
-    FastLED.show();
-}
 
-// Add this function near other utility functions
-void clearBoardExceptRoute1() {
-    dualRouteMode = true;         
+void clearBoardExceptRoute1() {     
     //tempHolds.clear();
-    for (int i = 0; i < 3; i++) { // repeat a bunch because apparently that works
-        route2Holds.clear();           // Clear route 2
-        currentHolds.clear();          // Clear current single route
-        currentLane = 0;               // Reset lane state (optional)
-        if (!route1Holds.empty()) {
-            currentHolds = route1Holds;    // Only copy if not empty
-        }
-        updateLEDDisplay();            // Refresh LEDs to show only route1 if present
+    setRouteStates(true, false);
+}
+//specify desired state for active route
+void setRouteState(bool routeOn) {
+    if (currentLane == 0) {
+        route1On = routeOn;
+    } else {
+        route2On = routeOn;
     }
-    Serial.print("[INFO] Cleared board except route1, now in single mode. route1Holds size: ");
-    Serial.print(route1Holds.size());
-    Serial.print(", currentHolds size: ");
-    Serial.println(currentHolds.size());
+    updateBoardState();
 }
 
-// toggle route visibility
-// place holds in history, clear current route, or retrieve last route from history
+//specify desired states for both routes
+void setRouteStates(bool route1State, bool route2State) {
+    route1On = route1State;
+    route2On = route2State;
+    updateBoardState();
+}
+// toggle route visibility of active route, based on current  lane and current state
 void toggleRouteVisibility() {
     if (currentLane == 0) {
-        // if on, turn off, send data to holds last
-        if (route1On) {
-            route1On = false;
-            route1HoldsLast = route1Holds; // save current route to history
-            for (int i = 0; i < 2; i++) { // repeat a bunch because apparently that works
-                route1Holds.clear();           // Clear route 1
-                currentHolds.clear();          // Clear current holds
-                updateLEDDisplay();
-            }
-        } else {
-            //if off, turn on, retrieve last route from history
-            route1On = true;
-            route1Holds = route1HoldsLast; // restore route from history
-            for (int i = 0; i < 2; i++) { // repeat a bunch because apparently that works
-                route1HoldsLast.clear();           // Clear history
-                currentHolds.clear();          // Clear current single route
-                updateLEDDisplay();
-            }
-        }
-    } else if (currentLane == 1) {
-        if (route2On) {
-            route2On = false;
-            route2HoldsLast = route2Holds; // save current route to history
-            for (int i = 0; i < 2; i++) { // repeat a bunch because apparently that works
-                route2Holds.clear();           // Clear route 2
-                currentHolds.clear();          // Clear current single route
-               updateLEDDisplay();
-            }
-        } else {
-            route2On = true;
-            route2Holds = route2HoldsLast; // restore route from history
-            for (int i = 0; i < 2; i++) { // repeat a bunch because apparently that works
-                route2HoldsLast.clear();           // Clear history
-                currentHolds.clear();          // Clear current holds
-                updateLEDDisplay();
-            }
-        }
+        route1On = !route1On;
+        Serial.print("Route 1 visibility toggled to: ");
+        Serial.println(route1On ? "ON" : "OFF");
+    } else {
+        route2On = !route2On;
+        Serial.print("Route 2 visibility toggled to: ");
+        Serial.println(route2On ? "ON" : "OFF");
     }
-
-    updateLEDDisplay();
-    Serial.print("[INFO] Toggled route visibility. route1Holds size: ");
-    Serial.print(route1Holds.size());
-    Serial.print(", route2Holds size: ");
-    Serial.println(route2Holds.size());
+    updateBoardState();
 }
 
 // BLE event handlers for ArduinoBLE
@@ -424,7 +380,6 @@ void onBLEConnected(BLEDevice central) {
     BLE.advertise();
     #endif
 }
-
 
 
 void onBLEDisconnected(BLEDevice central) {
@@ -489,28 +444,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
     // Get written data
     const uint8_t* data = characteristic.value();
     int length = characteristic.valueLength();
-
-    // Check for BLE command to toggle mode (single ASCII 'X' or 'x')
-    if (length == 1 && (data[0] == 'X' || data[0] == 'x')) {
-        dualRouteMode = !dualRouteMode;
-        Serial.print("Mode toggled. Now: ");
-        Serial.println(dualRouteMode ? "DUAL" : "SINGLE");
-        // Clear all routes when switching modes for consistency
-        route1Holds.clear();
-        route2Holds.clear();
-        currentHolds.clear();
-        updateLEDDisplay();
-        return;
-    }
     
-    // Check for lane command from web app (e.g., 'L1' or 'L2')
-    if (length == 2 && data[0] == 'L' && (data[1] == '1' || data[1] == '2')) {
-        int lane = (data[1] == '1') ? 0 : 1;
-        currentLane = lane;
-        Serial.print("[BLE] Lane set by command: ");
-        Serial.println(lane);
-        return; // Done processing this command
-    }
 
     if (length > 0) {
         // Debug output: Show raw received bytes
@@ -574,11 +508,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // Handle route state management
             // 'T' packets indicate a new test route, clear previous holds
             if (packetTypeChar == 'T') {
-                if (dualRouteMode) {
-                    tempHolds.clear();  // Clear temporary storage for new route
-                } else {
-                    currentHolds.clear();  // Basic mode: clear current route
-                }
+                tempHolds.clear();  // Clear temporary storage for new route
                 isNewClimb = true;
             }
             
@@ -609,47 +539,32 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     uint8_t r, g, b;
                     decodeColor(packetBuffer[i+2], r, g, b);
                     String colorName = getColorName(r, g, b);
-                    // Store hold information
+                    
+                    // Create hold with original decoded colors
                     Hold h = {position, r, g, b, colorName};
-                    // always store as original
-                    applyPrincipalColors(colorName, r, g, b);
-                    
-                    if (dualRouteMode) {
-                        tempHolds.push_back(h);
-                    } else {
-                        tempHolds.push_back(h);
-                    }
-                    
-                    // Debug output: Show decoded hold
-                   //ition "); Serial.print(position);
-                    //Serial.print(" with color "); Serial.print(colorName);
-                    //Serial.print(" RGB("); Serial.print(r);
-                    //Serial.print(","); Serial.print(g);
-                    //Serial.print(","); Serial.print(b);
-                    //Serial.println(")");
+                    tempHolds.push_back(h);
                 }
             }
             
             // Route completion handling
             // 'S' (Set) and 'T' (Test) packets indicate complete route transmission
             if (packetTypeChar == 'S' || packetTypeChar == 'T') {
-                if (dualRouteMode) {
                     if (currentLane == 0) {
-                        // Always clear both routes before assigning new holds
+                        // Clear active route, then assign new holds
                         route1Holds.clear();
                         route1Holds = tempHolds;
+                        // Apply principal colors to the stored route
                         for (Hold& h : route1Holds) {
-                            h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
-                            applyPrincipalColors(h.colorName, h.r, h.g, h.b);  // Apply principal colors
+                            applyPrincipalColors(h.colorName, h.r, h.g, h.b);
                         }
                         Serial.println("\nRoute 1 stored (principal colors):");
                     } else if (currentLane == 1) {
-                        // Always clear both routes before assigning new holds
+                        // Clear active route, then assign new holds
                         route2Holds.clear();
                         route2Holds = tempHolds;
+                        // Apply alternative colors to the stored route
                         for (Hold& h : route2Holds) {
-                            h.colorName = getColorName(h.r, h.g, h.b);  // Get original color name
-                            applyAltColors(h.colorName, h.r, h.g, h.b);  // Apply alternative colors
+                            applyAltColors(h.colorName, h.r, h.g, h.b);
                         }
                         Serial.println("\nRoute 2 stored (alternative colors):");
                     }
@@ -669,9 +584,6 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                         Serial.print(": "); Serial.println(h.colorName);
                     }
                     
-                    // dont toggle, only toggle via remote
-                   // currentLane = !currentLane;
-                    
                     // Show complete dual route summary
                     Serial.println("\n=== DUAL ROUTE SUMMARY ===");
                     if (!route1Holds.empty()) {
@@ -689,23 +601,13 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                         }
                     }
                     Serial.println("========================");
-                } else {
-                    // Single route mode: Store route from tempHolds to currentHolds
-                    currentHolds.clear();
-                    currentHolds = tempHolds;
-                    //debug: print complete climb summary
-                    //Serial.println("\nComplete climb summary:");
-                    //for (const Hold& h : currentHolds) {
-                    //    Serial.print("Position "); Serial.print(h.position);
-                    //    Serial.print(": "); Serial.println(h.colorName);
-                    //}
-                }
+                
                 
                 // Clear temporary storage for next route
                 tempHolds.clear();
                 
                 // Update LED display with new route data
-                updateLEDDisplay();
+                updateBoardState();
                 Serial.println();
             }
             
@@ -728,7 +630,7 @@ void setup() {
   while (!Serial);  // Wait for serial port to connect
 
   FastLED.addLeds<WS2811, LED_PIN, RGB>(leds, NUM_LEDS);
-  clearAllLEDs();  // Initialize all LEDs to off
+  FastLED.clear();
 
   IrReceiver.begin(IR_RECEIVE_PIN, ENABLE_LED_FEEDBACK); // Start IR receiver
   
@@ -791,22 +693,22 @@ void checkIRRemote() {
         Serial.print(IrReceiver.decodedIRData.address, HEX);
         Serial.print(" Command: 0x");
         Serial.println(IrReceiver.decodedIRData.command, HEX);
-
-        if (IrReceiver.decodedIRData.protocol == NEC &&
+        // dual route toggle, disables
+        /* if (IrReceiver.decodedIRData.protocol == NEC &&
             IrReceiver.decodedIRData.address == 0xC7EA &&
             IrReceiver.decodedIRData.command == 0x61) {
             dualRouteMode = !dualRouteMode;
             Serial.print("IR: Toggled dualRouteMode. Now: ");
             Serial.println(dualRouteMode ? "DUAL" : "SINGLE");
-        }
-        // 0xC7EA Command: 0x19 == up arrow
-        else if (IrReceiver.decodedIRData.protocol == NEC &&
+        } */
+        // 0xC7EA Command: 0x19 == up arrow == select lane ONE
+        if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x19) {
             Serial.println("IR: Up arrow pressed");
             currentLane = 1;
         }
-        // 0xC7EA Command: 0x33 == down arrow
+        // 0xC7EA Command: 0x33 == down arrow == select lane TWO
         else if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x33) {
@@ -827,9 +729,7 @@ void checkIRRemote() {
             Serial.println("IR: Return pressed");
             currentLane = !currentLane;
         }
-        //0x17 ==> power button, empty current lane, or return last route to current lane   
-        // if routeXHolds is empty, send routeXHoldsLast to routeXHolds
-        // if routeXHolds is not emtpy, copy to routeXHoldsLast, then clear routeXHolds
+        //0x17 ==> power button, toggle visibility of current lane
         else if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x17) {
