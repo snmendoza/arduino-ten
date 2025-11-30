@@ -142,12 +142,12 @@ void applyPrincipalColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) 
 // Red	to (255, 100, 0)	#FF6400	Vivid orange-red
 void applyAltColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
     colorName.toLowerCase();  // Case-insensitive comparison
-    if (colorName == "green") { r = 50; g = 255; b = 100; }
+    if (colorName == "green") { r = 40; g = 255; b = 80; }
     else if (colorName == "blue") { r = 0; g = 220; b = 255; }
     else if (colorName == "purple" || colorName == "pink") { r = 225; g = 255; b = 255; }
     else if (colorName == "red") { r = 250; g = 150; b = 0; }
-    else if (colorName == "yellow") { r = 200; g = 100; b = 100; }  // Add yellow support
-    else if (colorName == "white") { r = 200; g = 200; b = 200; }  // Add white support
+    else if (colorName == "yellow") { r = 220; g = 100; b = 100; }  // Add yellow support
+    else if (colorName == "white") { r = 200; g = 200; b = 180; }  // Add white support
     // If unknown color, keep original values
 }
 
