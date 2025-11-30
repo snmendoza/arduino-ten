@@ -1,4 +1,5 @@
 #include <ArduinoBLE.h>
+#include <Wire.h>          // I2C for ESP32 route bridge
 #include <vector>
 #define FASTLED_ALLOW_INTERRUPTS 0
 #include <FastLED.h>
@@ -466,10 +467,28 @@ void onBLEDisconnected(BLEDevice central) {
  */
 
 // State management for climbing routes
-std::vector<Hold> tempHolds;       // Temporary storage for incoming route
-bool activeRoute = true; // Always present, used only in dual mode
-bool isNewClimb = true;            // Flag to track if this is a new climb sequence
-std::vector<uint8_t> packetBuffer; // Buffer for incomplete packets (handles fragmentation)
+std::vector<Hold> tempHolds;         // Temporary storage for incoming route
+bool activeRoute = true;             // Always present, used only in dual mode
+bool isNewClimb = true;              // Flag to track if this is a new climb sequence
+// Packet buffer for direct BLE Aurora packets (phone -> R4)
+std::vector<uint8_t> packetBufferBLE;   // Buffer for incomplete BLE packets
+
+// UART route protocol from ESP32 (pre-parsed route 2)
+// Frame: [0xAA][0x55][count][(posL,posH,colorByte) * count]
+#define UART_ROUTE_HEADER_1 0xAA
+#define UART_ROUTE_HEADER_2 0x55
+
+enum UartRouteState {
+    UART_WAIT_HEADER1,
+    UART_WAIT_HEADER2,
+    UART_WAIT_COUNT,
+    UART_READ_PAYLOAD
+};
+
+UartRouteState uartRouteState = UART_WAIT_HEADER1;
+uint8_t uartRouteCount = 0;          // number of holds expected
+uint16_t uartRouteExpectedBytes = 0; // 3 * count
+std::vector<uint8_t> uartRoutePayload;
 
 void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic characteristic) {
     // Get written data
@@ -488,43 +507,43 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
         }
         Serial.println();
         
-        // Accumulate received bytes in buffer to handle packet fragmentation
+        // Accumulate received bytes in BLE buffer to handle packet fragmentation
         // BLE may split packets across multiple writes
         for (int i = 0; i < length; i++) {
-            packetBuffer.push_back(data[i]);
+            packetBufferBLE.push_back(data[i]);
         }
         
-        // Process all complete packets in the buffer
-        while (packetBuffer.size() >= 5) {  // Minimum packet size: START + LENGTH + CHECKSUM + TYPE_MARKER + PACKET_TYPE
+        // Parse BLE packet buffer
+        while (packetBufferBLE.size() >= 5) {  // Minimum packet size: START + LENGTH + CHECKSUM + TYPE_MARKER + PACKET_TYPE
             // Packet parsing: Find the start marker (0x01)
             size_t startIdx = 0;
-            while (startIdx < packetBuffer.size() && packetBuffer[startIdx] != 1) {
+            while (startIdx < packetBufferBLE.size() && packetBufferBLE[startIdx] != 1) {
                 startIdx++;
             }
             
             // Check if we have enough data for packet header
-            if (startIdx >= packetBuffer.size() - 4) {
+            if (startIdx >= packetBufferBLE.size() - 4) {
                 // Not enough data for a complete packet header
                 break;
             }
             
             // Extract packet length and validate we have complete packet
-            uint8_t packetLength = packetBuffer[startIdx + 1];
-            if (startIdx + packetLength + 4 >= packetBuffer.size()) {
+            uint8_t packetLength = packetBufferBLE[startIdx + 1];
+            if (startIdx + packetLength + 4 >= packetBufferBLE.size()) {
                 // Not enough data for the full packet (including END marker)
                 break;
             }
             
             // Validate packet structure: Check type marker (should be 0x02)
-            if (packetBuffer[startIdx + 3] != 2) {
+            if (packetBufferBLE[startIdx + 3] != 2) {
                 Serial.println("Invalid packet format - second byte should be 2");
                 // Remove invalid byte and try again
-                packetBuffer.erase(packetBuffer.begin(), packetBuffer.begin() + startIdx + 1);
+                packetBufferBLE.erase(packetBufferBLE.begin(), packetBufferBLE.begin() + startIdx + 1);
                 continue;
             }
             
             // Extract and validate packet type
-            uint8_t packetType = packetBuffer[startIdx + 4];
+            uint8_t packetType = packetBufferBLE[startIdx + 4];
             char packetTypeChar = (char)packetType;
             
             // Verify packet type is valid for API level 3
@@ -532,7 +551,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                 packetTypeChar != 'Q' && packetTypeChar != 'T') {
                 Serial.println("Invalid packet type for API level 3");
                 // Remove invalid byte and try again
-                packetBuffer.erase(packetBuffer.begin(), packetBuffer.begin() + startIdx + 1);
+                packetBufferBLE.erase(packetBufferBLE.begin(), packetBufferBLE.begin() + startIdx + 1);
                 continue;
             }
             
@@ -547,10 +566,10 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // Extract data portion (from packet type to end of data)
             std::vector<uint8_t> dataBytes;
             for (size_t i = startIdx + 4; i < startIdx + packetLength + 3; i++) {
-                dataBytes.push_back(packetBuffer[i]);
+                dataBytes.push_back(packetBufferBLE[i]);
             }
             uint8_t calculatedChecksum = calculateChecksum(dataBytes);
-            uint8_t receivedChecksum = packetBuffer[startIdx + 2];
+            uint8_t receivedChecksum = packetBufferBLE[startIdx + 2];
             
             // Debug output: Show packet details
             Serial.print("\n___________________Decoded packet (at millis: "); Serial.print(millis()); Serial.println(")___________________");
@@ -562,13 +581,13 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // Decode hold data (3 bytes per hold for API level 3)
             // Format: [position_low][position_high][color_encoded]
             for (size_t i = startIdx + 5; i < startIdx + packetLength + 3; i += 3) {
-                if (i + 2 < packetBuffer.size()) {
+                if (i + 2 < packetBufferBLE.size()) {
                     // Reconstruct 16-bit position from little-endian bytes
-                    uint16_t position = (packetBuffer[i+1] << 8) + packetBuffer[i];
+                    uint16_t position = (packetBufferBLE[i+1] << 8) + packetBufferBLE[i];
                     
                     // Decode compressed RGB color from single byte
                     uint8_t r, g, b;
-                    decodeColor(packetBuffer[i+2], r, g, b);
+                    decodeColor(packetBufferBLE[i+2], r, g, b);
                     String colorName = getColorName(r, g, b);
                     
                     // Create hold with original decoded colors
@@ -644,14 +663,95 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             
             // Remove processed packet from buffer
             // This advances the buffer past the current packet
-            packetBuffer.erase(packetBuffer.begin(), packetBuffer.begin() + startIdx + packetLength + 4);
+            packetBufferBLE.erase(packetBufferBLE.begin(), packetBufferBLE.begin() + startIdx + packetLength + 4);
         }
         
         // Buffer overflow protection
         // Clear buffer if it grows too large (prevents memory issues)
-        if (packetBuffer.size() > 1000) {
+        if (packetBufferBLE.size() > 1000) {
             Serial.println("Buffer overflow, clearing");
-            packetBuffer.clear();
+            packetBufferBLE.clear();
+        }
+    }
+}
+
+// Poll ESP32 (I2C slave) for any pending BLE bytes and feed them into
+// the same packetBuffer/parser used for BLE on this board.
+// All ESP32-sourced routes are forced onto channel 2 (alternate colors).
+// Poll ESP32 UART link for any pending pre-parsed route 2 updates
+void pollESP32RouteUART() {
+    while (Serial1.available() > 0) {
+        uint8_t b = static_cast<uint8_t>(Serial1.read());
+        switch (uartRouteState) {
+            case UART_WAIT_HEADER1:
+                if (b == UART_ROUTE_HEADER_1) {
+                    uartRouteState = UART_WAIT_HEADER2;
+                }
+                break;
+
+            case UART_WAIT_HEADER2:
+                if (b == UART_ROUTE_HEADER_2) {
+                    uartRouteState = UART_WAIT_COUNT;
+                } else if (b == UART_ROUTE_HEADER_1) {
+                    // Stay in header2 state if we see first header byte again
+                    uartRouteState = UART_WAIT_HEADER2;
+                } else {
+                    uartRouteState = UART_WAIT_HEADER1;
+                }
+                break;
+
+            case UART_WAIT_COUNT:
+                uartRouteCount = b;
+                if (uartRouteCount == 0) {
+                    uartRouteState = UART_WAIT_HEADER1;
+                } else {
+                    uartRoutePayload.clear();
+                    uartRouteExpectedBytes = static_cast<uint16_t>(uartRouteCount) * 3;
+                    uartRoutePayload.reserve(uartRouteExpectedBytes);
+                    uartRouteState = UART_READ_PAYLOAD;
+                }
+                break;
+
+            case UART_READ_PAYLOAD:
+                uartRoutePayload.push_back(b);
+                if (uartRoutePayload.size() >= uartRouteExpectedBytes) {
+                    // We have a full route2 payload from ESP32
+                    route2Holds.clear();
+
+                    for (uint8_t i = 0; i < uartRouteCount; i++) {
+                        size_t idx = static_cast<size_t>(i) * 3;
+                        uint16_t position = static_cast<uint16_t>(uartRoutePayload[idx]) |
+                                            (static_cast<uint16_t>(uartRoutePayload[idx + 1]) << 8);
+                        uint8_t colorByte = uartRoutePayload[idx + 2];
+
+                        uint8_t r, g, bColor;
+                        decodeColor(colorByte, r, g, bColor);
+                        String colorName = getColorName(r, g, bColor);
+
+                        Hold h = {position, r, g, bColor, colorName};
+                        route2Holds.push_back(h);
+                    }
+
+                    // Apply alternate color mapping for route 2
+                    for (Hold& h : route2Holds) {
+                        applyAltColors(h.colorName, h.r, h.g, h.b);
+                    }
+
+                    Serial.println("\n[UART] Route 2 stored from ESP32:");
+                    Serial.print("[UART] route2Holds size = ");
+                    Serial.println(route2Holds.size());
+                    for (const Hold& h : route2Holds) {
+                        Serial.print("  Position "); Serial.print(h.position);
+                        Serial.print(": "); Serial.println(h.colorName);
+                    }
+
+                    updateBoardState();
+
+                    // Reset state machine for next frame
+                    uartRouteState = UART_WAIT_HEADER1;
+                    uartRoutePayload.clear();
+                }
+                break;
         }
     }
 }
@@ -659,6 +759,10 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
 void setup() {
   Serial.begin(115200);
   while (!Serial);  // Wait for serial port to connect
+
+  // Hardware UART1 for ESP32 link (pins depend on board; on UNO R4 WiFi:
+  // Serial1 RX/TX are exposed on the UART header; wire to ESP32 TX2/RX2).
+  Serial1.begin(115200);
 
   FastLED.addLeds<WS2811, LED_PIN, RGB>(leds, NUM_LEDS);
   FastLED.clear();
@@ -784,6 +888,9 @@ void loop() {
   
   // Poll BLE events
   BLE.poll();
+
+    // Poll ESP32 UART link for any pending pre-parsed route 2 updates
+    pollESP32RouteUART();
 
   // Ensure BLE is always advertising for quick device switching
   if (!deviceConnected) {
