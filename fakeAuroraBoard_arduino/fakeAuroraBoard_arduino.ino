@@ -96,6 +96,8 @@ struct OverlapInfo {
 std::vector<OverlapInfo> overlappingHolds;
 bool hasOverlap = false;
 unsigned long overlapAnimStartMillis = 0;
+unsigned long lastAnimUpdateMillis = 0;
+const unsigned long ANIM_UPDATE_INTERVAL_MS = 30UL; // Update animation every 30ms for smoothness
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -246,17 +248,32 @@ void updateBoardState() {
             setBoardLEDs(boardState);
             interrupts();
         } else {
-            // Overlap present: animate overlapping holds by blending route1/route2 colors
-            // Compute triangle-wave blend factor over a 10s period
-            const unsigned long periodMs = 10000UL;
+            // Overlap present: animate overlapping holds with hold-fade pattern
+            // Pattern: Hold color1 (1s) -> Fade to color2 (0.75s) -> Hold color2 (1s) -> Fade to color1 (0.75s) -> repeat
+            const unsigned long periodMs = 3500UL; // Total period: 1s + 0.75s + 1s + 0.75s = 3.5s
+            const unsigned long hold1Ms = 1000UL;  // Hold at color1
+            const unsigned long fade1Ms = 750UL;  // Fade to color2
+            const unsigned long hold2Ms = 1000UL; // Hold at color2
+            const unsigned long fade2Ms = 750UL;  // Fade back to color1
+            
             unsigned long now = millis();
             unsigned long elapsed = (now - overlapAnimStartMillis) % periodMs;
-            float halfPeriod = periodMs / 2.0f;
             float t;
-            if (elapsed < halfPeriod) {
-                t = static_cast<float>(elapsed) / halfPeriod;          // 0 -> 1
+            
+            if (elapsed < hold1Ms) {
+                // Phase A: Hold at color1 (t=0)
+                t = 0.0f;
+            } else if (elapsed < hold1Ms + fade1Ms) {
+                // Phase B: Fade from color1 to color2 (t: 0 -> 1)
+                unsigned long fadeElapsed = elapsed - hold1Ms;
+                t = static_cast<float>(fadeElapsed) / static_cast<float>(fade1Ms);
+            } else if (elapsed < hold1Ms + fade1Ms + hold2Ms) {
+                // Phase C: Hold at color2 (t=1)
+                t = 1.0f;
             } else {
-                t = 1.0f - static_cast<float>(elapsed - halfPeriod) / halfPeriod; // 1 -> 0
+                // Phase D: Fade from color2 to color1 (t: 1 -> 0)
+                unsigned long fadeElapsed = elapsed - (hold1Ms + fade1Ms + hold2Ms);
+                t = 1.0f - (static_cast<float>(fadeElapsed) / static_cast<float>(fade2Ms));
             }
 
             noInterrupts();
@@ -849,11 +866,10 @@ void pollESP32RouteUART() {
                         Serial.print(": "); Serial.println(h.colorName);
                     }
 
-                    updateBoardState();
-
                     // Update overlap state and timeout timestamp for UART-delivered route2
                     updateOverlapState();
                     lastRouteUpdateMillis = millis();
+                    updateBoardState();
 
                     // Reset state machine for next frame
                     uartRouteState = UART_WAIT_HEADER1;
@@ -948,15 +964,27 @@ void checkIRRemote() {
         if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x19) {
-            Serial.println("IR: Up arrow pressed");
-            currentLane = 1;
+            // If already in lane 1 (alt context), repeated request toggles visibility
+            if (currentLane == 1) {
+                Serial.println("IR: Up arrow pressed - repeated context request, toggling route2 visibility");
+                toggleRouteVisibility();
+            } else {
+                Serial.println("IR: Up arrow pressed - selecting lane 1");
+                currentLane = 1;
+            }
         }
         // 0xC7EA Command: 0x33 == down arrow == select lane TWO
         else if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x33) {
-            Serial.println("IR: Down arrow pressed");
-            currentLane = 0;
+            // If already in lane 0 (normal context), repeated request toggles visibility
+            if (currentLane == 0) {
+                Serial.println("IR: Down arrow pressed - repeated context request, toggling route1 visibility");
+                toggleRouteVisibility();
+            } else {
+                Serial.println("IR: Down arrow pressed - selecting lane 0");
+                currentLane = 0;
+            }
         }
         //0xC7EA Command: 0x3 == home button, go to single mode, keep route 1
         else if (IrReceiver.decodedIRData.protocol == NEC &&
@@ -1017,10 +1045,23 @@ void loop() {
     // Optional: Serial.println("Ensuring BLE advertising (loop watchdog)");
   }
 
+  // Check IR remote frequently to catch double presses even during animation
   checkIRRemote();
   
   // LED display is updated automatically when routes are received
   // and during overlap animation when both routes are active.
+  // Continuously update animation when both routes are on and overlapping
+  // Throttle updates to allow IR interrupts to be processed
+  if (route1On && route2On && hasOverlap) {
+    unsigned long now = millis();
+    if (now - lastAnimUpdateMillis >= ANIM_UPDATE_INTERVAL_MS) {
+      updateBoardState();
+      lastAnimUpdateMillis = now;
+    }
+  }
+  
+  // Check IR again after potential animation update
+  checkIRRemote();
   
   delay(DELAY_TIME);
 }
