@@ -77,12 +77,25 @@ BLECharacteristic notifyCharacteristic(NOTIFY_CHARACTERISTIC, BLENotify | BLERea
 bool deviceConnected = false;
 
 // Global route storage for LED display
-std::vector<Hold> route1Holds;     // First route storage
-std::vector<Hold> route2Holds;     // Second route storage
+std::vector<Hold> route1Holds;         // First route storage
+std::vector<Hold> route2Holds;         // Second route storage
 std::vector<Hold> route1HoldsLast;     // First route storage for last route(history)
 std::vector<Hold> route2HoldsLast;     // Second route storage for last route(history)
 bool route1On = true;
 bool route2On = true;
+
+// Timeout tracking: last time any route was updated (route1 or route2)
+unsigned long lastRouteUpdateMillis = 0;
+
+// Overlap animation state (route1 vs route2)
+struct OverlapInfo {
+    uint16_t position;
+    CRGB colorRoute1;
+    CRGB colorRoute2;
+};
+std::vector<OverlapInfo> overlappingHolds;
+bool hasOverlap = false;
+unsigned long overlapAnimStartMillis = 0;
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -151,7 +164,53 @@ void applyAltColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
     // If unknown color, keep original values
 }
 
-//combines both route data into one vector, where data are overlapping (eg route 1 and 2 both have a hold at position 100), 
+// Helper: recompute overlapping holds between route1 and route2 for animation
+void updateOverlapState() {
+    overlappingHolds.clear();
+    hasOverlap = false;
+
+    if (route1Holds.empty() || route2Holds.empty()) {
+        return;
+    }
+
+    for (const Hold& h1 : route1Holds) {
+        for (const Hold& h2 : route2Holds) {
+            if (h1.position == h2.position && h1.position < NUM_LEDS) {
+                OverlapInfo info;
+                info.position = h1.position;
+                info.colorRoute1 = CRGB(h1.r, h1.g, h1.b);
+                info.colorRoute2 = CRGB(h2.r, h2.g, h2.b);
+                overlappingHolds.push_back(info);
+                break;  // assume at most one entry per position per route
+            }
+        }
+    }
+
+    hasOverlap = !overlappingHolds.empty();
+    if (hasOverlap) {
+        overlapAnimStartMillis = millis();
+    }
+}
+
+// Simple color blend helper for overlap animation
+CRGB blendColors(const CRGB& c1, const CRGB& c2, float t) {
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    uint8_t r = static_cast<uint8_t>(c1.r + (c2.r - c1.r) * t);
+    uint8_t g = static_cast<uint8_t>(c1.g + (c2.g - c1.g) * t);
+    uint8_t b = static_cast<uint8_t>(c1.b + (c2.b - c1.b) * t);
+    return CRGB(r, g, b);
+}
+
+// Helper to check if a given position is present in route1
+bool positionInRoute1(uint16_t pos) {
+    for (const Hold& h : route1Holds) {
+        if (h.position == pos) return true;
+    }
+    return false;
+}
+
+//combines both route data into one vector, where data are overlapping (eg route 1 and 2 both have a hold at position 100),
 // route 1 takes priority, route 2 is overwritten
 void updateBoardState() {
     // both off, just clear
@@ -178,13 +237,57 @@ void updateBoardState() {
     }
     // if both routes are on, calculate union of both routes
     else if (route1On && route2On) {
-        // start with an empty vector, all values being black
-        std::vector<Hold> boardState;
-        boardState.insert(boardState.end(), route1Holds.begin(), route1Holds.end());
-        boardState.insert(boardState.end(), route2Holds.begin(), route2Holds.end());
-        noInterrupts();
-        setBoardLEDs(boardState);
-        interrupts();
+        // If there is no overlap, fall back to existing combined behavior
+        if (!hasOverlap) {
+            std::vector<Hold> boardState;
+            boardState.insert(boardState.end(), route1Holds.begin(), route1Holds.end());
+            boardState.insert(boardState.end(), route2Holds.begin(), route2Holds.end());
+            noInterrupts();
+            setBoardLEDs(boardState);
+            interrupts();
+        } else {
+            // Overlap present: animate overlapping holds by blending route1/route2 colors
+            // Compute triangle-wave blend factor over a 10s period
+            const unsigned long periodMs = 10000UL;
+            unsigned long now = millis();
+            unsigned long elapsed = (now - overlapAnimStartMillis) % periodMs;
+            float halfPeriod = periodMs / 2.0f;
+            float t;
+            if (elapsed < halfPeriod) {
+                t = static_cast<float>(elapsed) / halfPeriod;          // 0 -> 1
+            } else {
+                t = 1.0f - static_cast<float>(elapsed - halfPeriod) / halfPeriod; // 1 -> 0
+            }
+
+            noInterrupts();
+            FastLED.clear();
+
+            // First, draw all route1 holds (base colors)
+            for (const Hold& h1 : route1Holds) {
+                if (h1.position < NUM_LEDS) {
+                    leds[h1.position] = CRGB(h1.r, h1.g, h1.b);
+                }
+            }
+
+            // Then draw route2-only holds (non-overlapping and not present in route1)
+            for (const Hold& h2 : route2Holds) {
+                if (h2.position < NUM_LEDS && !positionInRoute1(h2.position)) {
+                    leds[h2.position] = CRGB(h2.r, h2.g, h2.b);
+                }
+            }
+
+            // Finally, blend overlapping holds between route1 and route2 colors
+            for (const OverlapInfo& info : overlappingHolds) {
+                if (info.position < NUM_LEDS) {
+                    leds[info.position] = blendColors(info.colorRoute1, info.colorRoute2, t);
+                }
+            }
+
+            FastLED.show();
+            FastLED.delay(5);
+            FastLED.show();
+            interrupts();
+        }
     }
 }
 
@@ -652,11 +755,12 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     }
                     Serial.println("========================");
                 
-                
                 // Clear temporary storage for next route
                 tempHolds.clear();
                 
-                // Update LED display with new route data
+                // Update overlap state and timeout timestamp, then refresh LEDs
+                updateOverlapState();
+                lastRouteUpdateMillis = millis();
                 updateBoardState();
                 Serial.println();
             }
@@ -746,6 +850,10 @@ void pollESP32RouteUART() {
                     }
 
                     updateBoardState();
+
+                    // Update overlap state and timeout timestamp for UART-delivered route2
+                    updateOverlapState();
+                    lastRouteUpdateMillis = millis();
 
                     // Reset state machine for next frame
                     uartRouteState = UART_WAIT_HEADER1;
@@ -889,8 +997,19 @@ void loop() {
   // Poll BLE events
   BLE.poll();
 
-    // Poll ESP32 UART link for any pending pre-parsed route 2 updates
+  // Poll ESP32 UART link for any pending pre-parsed route 2 updates
     pollESP32RouteUART();
+
+  // Lane timeout: when alt lane (1) is selected, switch back to primary
+  // lane after 15s without any new route data. Does not clear route2.
+  if (currentLane == 1 && lastRouteUpdateMillis != 0) {
+    unsigned long now = millis();
+    if (now - lastRouteUpdateMillis > 15000UL) {
+      Serial.println("[TIMEOUT] No new routes on lane 1 for 15s; switching back to lane 0");
+      currentLane = 0;
+      // Do not modify route2Holds or visibility flags
+    }
+  }
 
   // Ensure BLE is always advertising for quick device switching
   if (!deviceConnected) {
@@ -901,7 +1020,7 @@ void loop() {
   checkIRRemote();
   
   // LED display is updated automatically when routes are received
-  // No need for continuous updates unless you want animations
+  // and during overlap animation when both routes are active.
   
   delay(DELAY_TIME);
 }
