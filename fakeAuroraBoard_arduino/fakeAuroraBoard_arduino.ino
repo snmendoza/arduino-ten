@@ -87,6 +87,14 @@ bool route2On = true;
 // Timeout tracking: last time any route was updated (route1 or route2)
 unsigned long lastRouteUpdateMillis = 0;
 
+// Deferred LED update flag (CRITICAL: prevents BLE callback deadlock)
+volatile bool pendingLEDUpdate = false;
+
+// IR activity tracking to pause animations during IR reception
+unsigned long lastIRCheckMillis = 0;
+bool irRecentlyActive = false;
+const unsigned long IR_COOLDOWN_MS = 300UL; // Pause animation for 300ms after IR activity
+
 // Overlap animation state (route1 vs route2)
 struct OverlapInfo {
     uint16_t position;
@@ -97,7 +105,7 @@ std::vector<OverlapInfo> overlappingHolds;
 bool hasOverlap = false;
 unsigned long overlapAnimStartMillis = 0;
 unsigned long lastAnimUpdateMillis = 0;
-const unsigned long ANIM_UPDATE_INTERVAL_MS = 30UL; // Update animation every 30ms for smoothness
+const unsigned long ANIM_UPDATE_INTERVAL_MS = 50UL; // Update animation every 50ms (20fps) - pauses during IR activity
 
 // Helper function to decode RGB color from API level 3 format
 void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
@@ -217,25 +225,19 @@ bool positionInRoute1(uint16_t pos) {
 void updateBoardState() {
     // both off, just clear
     if (!route1On && !route2On) {
-        noInterrupts();
         FastLED.clear();
         FastLED.show();
-        FastLED.delay(5);  // Much shorter delay
-        FastLED.show();
-        interrupts();
         return;
     }
     
     // if only one route is on, send it to the board    
     if (route1On && !route2On) {
-        noInterrupts();
+        // setBoardLEDs handles its own timing, no need to disable interrupts here
         setBoardLEDs(route1Holds);
-        interrupts();
     }
     else if (route2On && !route1On) {
-        noInterrupts();
+        // setBoardLEDs handles its own timing, no need to disable interrupts here
         setBoardLEDs(route2Holds);
-        interrupts();
     }
     // if both routes are on, calculate union of both routes
     else if (route1On && route2On) {
@@ -244,17 +246,16 @@ void updateBoardState() {
             std::vector<Hold> boardState;
             boardState.insert(boardState.end(), route1Holds.begin(), route1Holds.end());
             boardState.insert(boardState.end(), route2Holds.begin(), route2Holds.end());
-            noInterrupts();
+            // setBoardLEDs handles its own timing, no need to disable interrupts here
             setBoardLEDs(boardState);
-            interrupts();
         } else {
             // Overlap present: animate overlapping holds with hold-fade pattern
             // Pattern: Hold color1 (1s) -> Fade to color2 (0.75s) -> Hold color2 (1s) -> Fade to color1 (0.75s) -> repeat
-            const unsigned long periodMs = 3500UL; // Total period: 1s + 0.75s + 1s + 0.75s = 3.5s
-            const unsigned long hold1Ms = 1000UL;  // Hold at color1
-            const unsigned long fade1Ms = 750UL;  // Fade to color2
-            const unsigned long hold2Ms = 1000UL; // Hold at color2
-            const unsigned long fade2Ms = 750UL;  // Fade back to color1
+            const unsigned long periodMs = 2200UL; // Total period: 750ms + 350ms + 750ms + 350ms = 2200ms
+            const unsigned long hold1Ms = 750UL;  // Hold at color1
+            const unsigned long fade1Ms = 350UL;  // Fade to color2
+            const unsigned long hold2Ms = 750UL; // Hold at color2
+            const unsigned long fade2Ms = 350UL;  // Fade back to color1
             
             unsigned long now = millis();
             unsigned long elapsed = (now - overlapAnimStartMillis) % periodMs;
@@ -276,56 +277,52 @@ void updateBoardState() {
                 t = 1.0f - (static_cast<float>(fadeElapsed) / static_cast<float>(fade2Ms));
             }
 
-            noInterrupts();
+            // CRITICAL FIX: Do ALL LED calculations with interrupts ENABLED
+            // Only disable interrupts for the final FastLED.show() call
+            
+            // Clear all LEDs first (interrupts enabled)
             FastLED.clear();
 
-            // First, draw all route1 holds (base colors)
+            // First, draw all route1 holds (base colors) - interrupts enabled
             for (const Hold& h1 : route1Holds) {
                 if (h1.position < NUM_LEDS) {
                     leds[h1.position] = CRGB(h1.r, h1.g, h1.b);
                 }
             }
 
-            // Then draw route2-only holds (non-overlapping and not present in route1)
+            // Then draw route2-only holds (non-overlapping and not present in route1) - interrupts enabled
             for (const Hold& h2 : route2Holds) {
                 if (h2.position < NUM_LEDS && !positionInRoute1(h2.position)) {
                     leds[h2.position] = CRGB(h2.r, h2.g, h2.b);
                 }
             }
 
-            // Finally, blend overlapping holds between route1 and route2 colors
+            // Finally, blend overlapping holds between route1 and route2 colors - interrupts enabled
             for (const OverlapInfo& info : overlappingHolds) {
                 if (info.position < NUM_LEDS) {
                     leds[info.position] = blendColors(info.colorRoute1, info.colorRoute2, t);
                 }
             }
 
+            // Use FastLED.show() which handles interrupt timing automatically
             FastLED.show();
-            FastLED.delay(5);
-            FastLED.show();
-            interrupts();
         }
     }
 }
 
 // interpret a full board state vector, and displays it to the LEDs
 void setBoardLEDs(const std::vector<Hold>& boardState) {
-    // Disable interrupts during critical LED operations
-    
-    // Clear all LEDs first
+    // Clear all LEDs first (interrupts enabled for calculations)
     FastLED.clear();
-    //FastLED.show();
-    FastLED.delay(5);
-    // Set new LED values
+    
+    // Set new LED values (interrupts enabled)
     for (const Hold& hold : boardState) {
         if (hold.position < NUM_LEDS) {  // Safety check
             leds[hold.position] = CRGB(hold.r, hold.g, hold.b);
         }
     }
     
-    // Update the physical LEDs with minimal delay
-    FastLED.show();
-    FastLED.delay(5);  // Much shorter delay
+    // Update the physical LEDs (FastLED.show() handles interrupt timing internally)
     FastLED.show();
 }
 
@@ -617,15 +614,15 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
     
 
     if (length > 0) {
-        // Debug output: Show raw received bytes
-        Serial.print("Received command from ");
-        Serial.print(BLE.address());
-        Serial.print(": ");
-        for (int i = 0; i < length; i++) {
-          Serial.print((int)data[i]);
-          Serial.print(" ");
-        }
-        Serial.println();
+        // Debug output: Show raw received bytes (COMMENTED OUT to prevent BLE timeout)
+        // Serial.print("Received command from ");
+        // Serial.print(BLE.address());
+        // Serial.print(": ");
+        // for (int i = 0; i < length; i++) {
+        //   Serial.print((int)data[i]);
+        //   Serial.print(" ");
+        // }
+        // Serial.println();
         
         // Accumulate received bytes in BLE buffer to handle packet fragmentation
         // BLE may split packets across multiple writes
@@ -691,12 +688,12 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             uint8_t calculatedChecksum = calculateChecksum(dataBytes);
             uint8_t receivedChecksum = packetBufferBLE[startIdx + 2];
             
-            // Debug output: Show packet details
-            Serial.print("\n___________________Decoded packet (at millis: "); Serial.print(millis()); Serial.println(")___________________");
-            Serial.print("Length: "); Serial.println(packetLength);
-            Serial.print("Checksum: "); Serial.println(receivedChecksum);
-            Serial.print("Calculated checksum: "); Serial.println(calculatedChecksum);
-            Serial.print("Packet type: "); Serial.println(packetTypeChar);
+            // Debug output: Show packet details (COMMENTED OUT to prevent BLE timeout)
+            // Serial.print("\n___________________Decoded packet (at millis: "); Serial.print(millis()); Serial.println(")___________________");
+            // Serial.print("Length: "); Serial.println(packetLength);
+            // Serial.print("Checksum: "); Serial.println(receivedChecksum);
+            // Serial.print("Calculated checksum: "); Serial.println(calculatedChecksum);
+            // Serial.print("Packet type: "); Serial.println(packetTypeChar);
             
             // Decode hold data (3 bytes per hold for API level 3)
             // Format: [position_low][position_high][color_encoded]
@@ -727,7 +724,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                         for (Hold& h : route1Holds) {
                             applyPrincipalColors(h.colorName, h.r, h.g, h.b);
                         }
-                        Serial.println("\nRoute 1 stored (principal colors):");
+                        Serial.println("Route 1 received");
                     } else if (currentLane == 1) {
                         // Clear active route, then assign new holds
                         route2Holds.clear();
@@ -736,49 +733,49 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                         for (Hold& h : route2Holds) {
                             applyAltColors(h.colorName, h.r, h.g, h.b);
                         }
-                        Serial.println("\nRoute 2 stored (alternative colors):");
+                        Serial.println("Route 2 received");
                     }
-                    // Debug: Print state after updating routes
-                    Serial.print("[DEBUG] After update: activeRoute=");
-                    Serial.print(activeRoute);
-                    Serial.print(" | route1Holds size=");
-                    Serial.print(route1Holds.size());
-                    Serial.print(" | route2Holds size=");
-                    Serial.print(route2Holds.size());
-                    Serial.print(" | tempHolds size=");
-                    Serial.println(tempHolds.size());
+                    // Debug: Print state after updating routes (COMMENTED OUT to prevent BLE timeout)
+                    // Serial.print("[DEBUG] After update: activeRoute=");
+                    // Serial.print(activeRoute);
+                    // Serial.print(" | route1Holds size=");
+                    // Serial.print(route1Holds.size());
+                    // Serial.print(" | route2Holds size=");
+                    // Serial.print(route2Holds.size());
+                    // Serial.print(" | tempHolds size=");
+                    // Serial.println(tempHolds.size());
                     
                     // Show the route that was just stored
-                    for (const Hold& h : tempHolds) {
-                        Serial.print("Position "); Serial.print(h.position);
-                        Serial.print(": "); Serial.println(h.colorName);
-                    }
+                    // for (const Hold& h : tempHolds) {
+                    //     Serial.print("Position "); Serial.print(h.position);
+                    //     Serial.print(": "); Serial.println(h.colorName);
+                    // }
                     
                     // Show complete dual route summary
-                    Serial.println("\n=== DUAL ROUTE SUMMARY ===");
-                    if (!route1Holds.empty()) {
-                        Serial.println("Route 1:");
-                        for (const Hold& h : route1Holds) {
-                            Serial.print("  Position "); Serial.print(h.position);
-                            Serial.print(": "); Serial.println(h.colorName);
-                        }
-                    }
-                    if (!route2Holds.empty()) {
-                        Serial.println("Route 2:");
-                        for (const Hold& h : route2Holds) {
-                            Serial.print("  Position "); Serial.print(h.position);
-                            Serial.print(": "); Serial.println(h.colorName);
-                        }
-                    }
-                    Serial.println("========================");
+                    // Serial.println("\n=== DUAL ROUTE SUMMARY ===");
+                    // if (!route1Holds.empty()) {
+                    //     Serial.println("Route 1:");
+                    //     for (const Hold& h : route1Holds) {
+                    //         Serial.print("  Position "); Serial.print(h.position);
+                    //         Serial.print(": "); Serial.println(h.colorName);
+                    //     }
+                    // }
+                    // if (!route2Holds.empty()) {
+                    //     Serial.println("Route 2:");
+                    //     for (const Hold& h : route2Holds) {
+                    //         Serial.print("  Position "); Serial.print(h.position);
+                    //         Serial.print(": "); Serial.println(h.colorName);
+                    //     }
+                    // }
+                    // Serial.println("========================");
                 
                 // Clear temporary storage for next route
                 tempHolds.clear();
                 
-                // Update overlap state and timeout timestamp, then refresh LEDs
+                // Update overlap state and timeout timestamp, then set flag for deferred LED update
                 updateOverlapState();
                 lastRouteUpdateMillis = millis();
-                updateBoardState();
+                pendingLEDUpdate = true;  // ← Set flag instead of calling updateBoardState() directly
                 Serial.println();
             }
             
@@ -858,18 +855,19 @@ void pollESP32RouteUART() {
                         applyAltColors(h.colorName, h.r, h.g, h.b);
                     }
 
-                    Serial.println("\n[UART] Route 2 stored from ESP32:");
-                    Serial.print("[UART] route2Holds size = ");
-                    Serial.println(route2Holds.size());
-                    for (const Hold& h : route2Holds) {
-                        Serial.print("  Position "); Serial.print(h.position);
-                        Serial.print(": "); Serial.println(h.colorName);
-                    }
+                    Serial.println("[UART] Route 2 received from ESP32");
+                    // Verbose debug output commented out to prevent timing issues
+                    // Serial.print("[UART] route2Holds size = ");
+                    // Serial.println(route2Holds.size());
+                    // for (const Hold& h : route2Holds) {
+                    //     Serial.print("  Position "); Serial.print(h.position);
+                    //     Serial.print(": "); Serial.println(h.colorName);
+                    // }
 
                     // Update overlap state and timeout timestamp for UART-delivered route2
                     updateOverlapState();
                     lastRouteUpdateMillis = millis();
-                    updateBoardState();
+                    pendingLEDUpdate = true;  // ← Set flag instead of calling updateBoardState() directly
 
                     // Reset state machine for next frame
                     uartRouteState = UART_WAIT_HEADER1;
@@ -946,6 +944,10 @@ void setup() {
 
 void checkIRRemote() {
     if (IrReceiver.decode()) {
+        // Mark IR as recently active to pause animations
+        irRecentlyActive = true;
+        lastIRCheckMillis = millis();
+        
         Serial.print("Protocol: ");
         Serial.print(IrReceiver.decodedIRData.protocol);
         Serial.print(" Address: 0x");
@@ -1025,6 +1027,12 @@ void loop() {
   // Poll BLE events
   BLE.poll();
 
+  // Process deferred LED updates (CRITICAL: never call updateBoardState from callbacks)
+  if (pendingLEDUpdate) {
+    pendingLEDUpdate = false;
+    updateBoardState();
+  }
+
   // Poll ESP32 UART link for any pending pre-parsed route 2 updates
     pollESP32RouteUART();
 
@@ -1045,16 +1053,23 @@ void loop() {
     // Optional: Serial.println("Ensuring BLE advertising (loop watchdog)");
   }
 
-  // Check IR remote frequently to catch double presses even during animation
+  // CRITICAL: Check IR multiple times before animation to improve responsiveness
+  // IR decoding requires precise timing and can miss signals if FastLED.show() blocks
   checkIRRemote();
+  
+  // Check if IR cooldown period has elapsed
+  unsigned long now = millis();
+  if (irRecentlyActive && (now - lastIRCheckMillis > IR_COOLDOWN_MS)) {
+    irRecentlyActive = false;
+  }
   
   // LED display is updated automatically when routes are received
   // and during overlap animation when both routes are active.
   // Continuously update animation when both routes are on and overlapping
-  // Throttle updates to allow IR interrupts to be processed
-  if (route1On && route2On && hasOverlap) {
-    unsigned long now = millis();
+  // CRITICAL: Pause animation completely during IR activity to prevent missed signals
+  if (route1On && route2On && hasOverlap && !pendingLEDUpdate && !irRecentlyActive) {
     if (now - lastAnimUpdateMillis >= ANIM_UPDATE_INTERVAL_MS) {
+      // Safe to update - no recent IR activity detected
       updateBoardState();
       lastAnimUpdateMillis = now;
     }
