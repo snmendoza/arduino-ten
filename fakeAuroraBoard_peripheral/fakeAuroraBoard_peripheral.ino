@@ -28,8 +28,12 @@
  #define DATA_TRANSFER_CHARACTERISTIC   "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
  #define NOTIFY_CHARACTERISTIC         "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
  
- #define DISPLAY_NAME   "Tension Board 2 - It's a jug!"
+ #define DISPLAY_NAME   "Tension Board 2 - Hard Mode"
+ // Note, when I set the name to "It's a jug!" all the bluetooth packets were corrupt. 
  #define API_LEVEL      3
+
+// Keep advertising even when connected (allows quick device switching)
+#define CONTINUOUS_ADVERTISING true
  
 // UART configuration: ESP32 hardware UART (Serial2) for link to R4
 // Default pins on many ESP32 Dev Modules: RX2 = GPIO16, TX2 = GPIO17
@@ -207,6 +211,10 @@ void uartLoopbackTest() {
    void onConnect(BLEServer*) override {
      g_deviceConnected = true;
      Serial.println("BLE: device connected");
+    #if CONTINUOUS_ADVERTISING
+    // Continue advertising while connected for quick device switching
+    BLEDevice::startAdvertising();
+    #endif
    }
    void onDisconnect(BLEServer*) override {
      g_deviceConnected = false;
@@ -432,13 +440,18 @@ void loop() {
     Serial.println("BLE: connected");
   }
 
-  // Ensure advertising continues (ESP32 may stop advertising after a period)
-  if (!g_deviceConnected) {
-    // Keep advertising active - restart if needed
+  // Ensure advertising continues (even while connected when enabled)
+  {
     static unsigned long lastAdvCheck = 0;
     unsigned long now = millis();
     if (now - lastAdvCheck > 5000) {  // Check every 5 seconds
+      #if CONTINUOUS_ADVERTISING
       BLEDevice::startAdvertising();
+      #else
+      if (!g_deviceConnected) {
+        BLEDevice::startAdvertising();
+      }
+      #endif
       lastAdvCheck = now;
     }
   }

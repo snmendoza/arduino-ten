@@ -93,7 +93,7 @@ volatile bool pendingLEDUpdate = false;
 // IR activity tracking to pause animations during IR reception
 unsigned long lastIRCheckMillis = 0;
 bool irRecentlyActive = false;
-const unsigned long IR_COOLDOWN_MS = 300UL; // Pause animation for 300ms after IR activity
+const unsigned long IR_COOLDOWN_MS = 500UL; // Pause animation for 500ms after IR activity to ensure command completes
 
 // Overlap animation state (route1 vs route2)
 struct OverlapInfo {
@@ -353,6 +353,8 @@ void mirrorCurrentLane() {
             route2Holds[i].position = mirrorPosition(route2Holds[i].position);
         }
     }
+    // Recalculate overlap state after changing positions
+    updateOverlapState();
     updateBoardState(); // Update the display after mirroring
 }
 
@@ -495,6 +497,8 @@ void setRouteState(bool routeOn) {
     } else {
         route2On = routeOn;
     }
+    // Recalculate overlap state when changing visibility
+    updateOverlapState();
     updateBoardState();
 }
 
@@ -502,6 +506,8 @@ void setRouteState(bool routeOn) {
 void setRouteStates(bool route1State, bool route2State) {
     route1On = route1State;
     route2On = route2State;
+    // Recalculate overlap state when changing visibility
+    updateOverlapState();
     updateBoardState();
 }
 // toggle route visibility of active route, based on current  lane and current state
@@ -515,7 +521,23 @@ void toggleRouteVisibility() {
         Serial.print("Route 2 visibility toggled to: ");
         Serial.println(route2On ? "ON" : "OFF");
     }
+    // CRITICAL: Recalculate overlap state after visibility change
+    // This ensures overlappingHolds vector is fresh when animation resumes
+    updateOverlapState();
+    
+    // Force immediate LED update after toggle
     updateBoardState();
+    Serial.print("  [After toggle: route1On=");
+    Serial.print(route1On);
+    Serial.print(", route2On=");
+    Serial.print(route2On);
+    Serial.print(", hasOverlap=");
+    Serial.print(hasOverlap);
+    Serial.print(", route1Holds.size=");
+    Serial.print(route1Holds.size());
+    Serial.print(", route2Holds.size=");
+    Serial.print(route2Holds.size());
+    Serial.println("]");
 }
 
 // BLE event handlers for ArduinoBLE
@@ -968,24 +990,32 @@ void checkIRRemote() {
                  IrReceiver.decodedIRData.command == 0x19) {
             // If already in lane 1 (alt context), repeated request toggles visibility
             if (currentLane == 1) {
-                Serial.println("IR: Up arrow pressed - repeated context request, toggling route2 visibility");
+                Serial.println("IR: Up arrow pressed - toggling route2 visibility");
                 toggleRouteVisibility();
             } else {
-                Serial.println("IR: Up arrow pressed - selecting lane 1");
+                Serial.print("IR: Up arrow pressed - switching from lane ");
+                Serial.print(currentLane);
+                Serial.println(" to lane 1");
                 currentLane = 1;
+                // Provide visual feedback by refreshing display
+                updateBoardState();
             }
         }
-        // 0xC7EA Command: 0x33 == down arrow == select lane TWO
+        // 0xC7EA Command: 0x33 == down arrow == select lane ZERO
         else if (IrReceiver.decodedIRData.protocol == NEC &&
                  IrReceiver.decodedIRData.address == 0xC7EA &&
                  IrReceiver.decodedIRData.command == 0x33) {
             // If already in lane 0 (normal context), repeated request toggles visibility
             if (currentLane == 0) {
-                Serial.println("IR: Down arrow pressed - repeated context request, toggling route1 visibility");
+                Serial.println("IR: Down arrow pressed - toggling route1 visibility");
                 toggleRouteVisibility();
             } else {
-                Serial.println("IR: Down arrow pressed - selecting lane 0");
+                Serial.print("IR: Down arrow pressed - switching from lane ");
+                Serial.print(currentLane);
+                Serial.println(" to lane 0");
                 currentLane = 0;
+                // Provide visual feedback by refreshing display
+                updateBoardState();
             }
         }
         //0xC7EA Command: 0x3 == home button, go to single mode, keep route 1
