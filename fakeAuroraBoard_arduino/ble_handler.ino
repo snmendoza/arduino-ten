@@ -125,18 +125,28 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
             // Route completion: 'S' and 'T' packets indicate complete route
             if (packetTypeChar == 'S' || packetTypeChar == 'T') {
                     if (currentLane == 0) {
+                        // Push current route to history before overwriting
+                        if (!route1Holds.empty()) {
+                            historyPush(0, route1Holds);
+                        }
                         route1Holds.clear();
                         route1Holds = tempHolds;
                         for (Hold& h : route1Holds) {
                             applyPrincipalColors(h.color, h.r, h.g, h.b);
                         }
+                        historyResetBrowsing(0);
                         Serial.println("Route 1 received");
                     } else if (currentLane == 1) {
+                        // Push current route to history before overwriting
+                        if (!route2Holds.empty()) {
+                            historyPush(1, route2Holds);
+                        }
                         route2Holds.clear();
                         route2Holds = tempHolds;
                         for (Hold& h : route2Holds) {
                             applyAltColors(h.color, h.r, h.g, h.b);
                         }
+                        historyResetBrowsing(1);
                         Serial.println("Route 2 received");
                     }
 

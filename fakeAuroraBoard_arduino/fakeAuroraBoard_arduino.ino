@@ -56,10 +56,12 @@ bool deviceConnected = false;
 // Route storage
 std::vector<Hold> route1Holds;
 std::vector<Hold> route2Holds;
-std::vector<Hold> route1HoldsLast;     // Route 1 history (reserved for future use)
-std::vector<Hold> route2HoldsLast;     // Route 2 history (reserved for future use)
 bool route1On = true;
 bool route2On = true;
+
+// Per-lane route history
+LaneHistory laneHistory[NUM_LANES] = {};
+bool flashDirty = false;  // set true when history changes, cleared on save
 
 // Timeout tracking: last time any route was updated
 unsigned long lastRouteUpdateMillis = 0;
@@ -196,7 +198,15 @@ void setup() {
   Serial.print("Device name: ");
   Serial.println(boardName);
 
+  // Startup animation
   startupLEDs();
+
+  // Load saved routes and history from flash
+  if (flashLoad()) {
+    Serial.println("Restored routes from flash — use Left/Right arrows to browse history");
+    updateOverlapState();
+    updateBoardState();
+  }
 }
 
 // =====================================================================
@@ -261,6 +271,9 @@ void loop() {
 
   // Check IR again after potential animation update
   checkIRRemote();
+
+  // Periodic flash save (every 10 minutes if dirty)
+  flashSaveIfDirty();
 
   delay(DELAY_TIME);
 }

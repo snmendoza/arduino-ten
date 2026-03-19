@@ -57,7 +57,10 @@ void pollESP32RouteUART() {
                     break;
                 }
 
-                // Checksum valid — commit route2
+                // Checksum valid — push current route2 to history, then commit new one
+                if (!route2Holds.empty()) {
+                    historyPush(1, route2Holds);
+                }
                 route2Holds.clear();
 
                 for (uint8_t i = 0; i < uartRouteCount; i++) {
@@ -78,6 +81,7 @@ void pollESP32RouteUART() {
                     applyAltColors(h.color, h.r, h.g, h.b);
                 }
 
+                historyResetBrowsing(1);
                 Serial.println("[UART] Route 2 received from ESP32 (checksum OK)");
 
                 updateOverlapState();

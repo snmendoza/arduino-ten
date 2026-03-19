@@ -3,9 +3,48 @@
 // IR Remote Button Map (NEC protocol, address 0xC7EA):
 //   Up Arrow   (0x19): Switch to lane 1, or toggle route2 visibility if already there
 //   Down Arrow (0x33): Switch to lane 0, or toggle route1 visibility if already there
+//   Left Arrow (0x44): History — browse older route on current lane
+//   Right Arrow(0x43): History — browse newer route on current lane (or back to live)
 //   Home       (0x03): Single mode — show only route 1
 //   Return     (0x78): Mirror current lane horizontally
 //   Power      (0x17): Toggle visibility of current lane
+//
+// NOTE: Left/Right arrow codes (0x44/0x43) may differ on your remote.
+//       Press the button and check Serial output for the actual command code.
+
+// Helper: apply a history navigation result to the display
+static void applyHistoryNavigation(uint8_t lane, int8_t direction) {
+    if (historyNavigate(lane, direction)) {
+        const std::vector<Hold>& displayRoute = historyGetDisplayRoute(lane);
+
+        // Update the live route vectors so updateBoardState/overlap work correctly
+        if (lane == 0) {
+            route1Holds = displayRoute;
+        } else {
+            route2Holds = displayRoute;
+        }
+
+        int8_t idx = laneHistory[lane].browseIndex;
+        if (idx < 0) {
+            Serial.print("IR: Back to live route on lane ");
+        } else {
+            Serial.print("IR: History [");
+            Serial.print(idx);
+            Serial.print("/");
+            Serial.print(laneHistory[lane].depth - 1);
+            Serial.print("] on lane ");
+        }
+        Serial.println(lane);
+
+        updateOverlapState();
+        updateBoardState();
+    } else {
+        Serial.print("IR: Already at ");
+        Serial.print((direction < 0) ? "oldest" : "live");
+        Serial.print(" on lane ");
+        Serial.println(lane);
+    }
+}
 
 void checkIRRemote() {
     if (IrReceiver.decode()) {
@@ -40,7 +79,7 @@ void checkIRRemote() {
                         Serial.print(currentLane);
                         Serial.println(" to lane 1");
                         currentLane = 1;
-                        lastRouteUpdateMillis = millis();  // Reset timeout for manual switch
+                        lastRouteUpdateMillis = millis();
                         updateBoardState();
                     }
                     break;
@@ -56,6 +95,14 @@ void checkIRRemote() {
                         currentLane = 0;
                         updateBoardState();
                     }
+                    break;
+
+                case 0x44:  // Left arrow — history: browse older
+                    applyHistoryNavigation(currentLane, -1);
+                    break;
+
+                case 0x43:  // Right arrow — history: browse newer / back to live
+                    applyHistoryNavigation(currentLane, +1);
                     break;
 
                 case 0x03:  // Home — single mode, keep route 1
