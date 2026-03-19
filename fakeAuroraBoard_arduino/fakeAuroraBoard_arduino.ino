@@ -6,7 +6,7 @@
 #include <tuple>
 #include <IRremote.h>
 
-/*/Users/SeanMacbook/Documents/Arduino/sketch_may10IRRemote2/ReceiveDump/ReceiveDump.inopin
+/*
  * Run tension board receiver on arduino r4
  * =====================================================================
  * 
@@ -37,8 +37,8 @@
 #define DISPLAY_NAME "Tension Board 2"
 #define API_LEVEL 3
 
-// Add runtime mode variable
-bool currentLane = 0;
+// Active lane: 0 = route1 (principal colors), 1 = route2 (alt colors)
+uint8_t currentLane = 0;
 
 // Device switching toggle: Set to true to continue advertising when connected (allows quick device switching)
 #define CONTINUOUS_ADVERTISING true
@@ -58,11 +58,23 @@ bool currentLane = 0;
 // Global board name buffer for BLE
 char boardName[64];
 
+// Color categories for hold classification
+enum HoldColor : uint8_t {
+    COLOR_RED,
+    COLOR_GREEN,
+    COLOR_BLUE,
+    COLOR_PINK,
+    COLOR_YELLOW,
+    COLOR_WHITE,
+    COLOR_BLACK,
+    COLOR_UNKNOWN
+};
+
 // Structure to store hold information
 struct Hold {
     uint16_t position;
     uint8_t r, g, b;
-    String colorName;
+    HoldColor color;
 };
 
 CRGB leds[NUM_LEDS];
@@ -102,6 +114,7 @@ struct OverlapInfo {
     CRGB colorRoute2;
 };
 std::vector<OverlapInfo> overlappingHolds;
+std::vector<Hold> route2OnlyHolds;  // Route2 holds not present in route1 (pre-computed)
 bool hasOverlap = false;
 unsigned long overlapAnimStartMillis = 0;
 unsigned long lastAnimUpdateMillis = 0;
@@ -114,16 +127,16 @@ void decodeColor(uint8_t colorByte, uint8_t& r, uint8_t& g, uint8_t& b) {
     b = (colorByte & 0x03) * 255 / 3;         // 2 bits for blue
 }
 
-// Helper function to get color name
-String getColorName(uint8_t r, uint8_t g, uint8_t b) {
-    if (r > 200 && g < 50 && b < 50) return "Red";
-    if (r < 50 && g > 200 && b < 50) return "Green";
-    if (r < 50 && g < 50 && b > 200) return "Blue";
-    if (r > 50 && g < 50 && b > 200) return "Pink";
-    if (r > 200 && g > 200 && b < 50) return "Yellow";
-    if (r > 200 && g > 200 && b > 200) return "White";
-    if (r < 50 && g < 50 && b < 50) return "Black";
-    return "Unknown";
+// Helper function to classify decoded RGB into a hold color category
+HoldColor classifyColor(uint8_t r, uint8_t g, uint8_t b) {
+    if (r > 200 && g < 50 && b < 50) return COLOR_RED;
+    if (r < 50 && g > 200 && b < 50) return COLOR_GREEN;
+    if (r < 50 && g < 50 && b > 200) return COLOR_BLUE;
+    if (r > 50 && g < 50 && b > 200) return COLOR_PINK;
+    if (r > 200 && g > 200 && b < 50) return COLOR_YELLOW;
+    if (r > 200 && g > 200 && b > 200) return COLOR_WHITE;
+    if (r < 50 && g < 50 && b < 50) return COLOR_BLACK;
+    return COLOR_UNKNOWN;
 }
 // Helper function to calculate checksum
 uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
@@ -135,43 +148,42 @@ uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
 }
 
 // Helper function to apply principal colors (Route 1)
-// Green	(0, 255, 80)	#00FF50	Neon green
-// Blue	(0, 0, 255)	#0000FF pure blue
-// Purple	(100, 0, 255)	#B400FF	Vivid violet
-// Red	(255, 25, 25)	#FF3232	Bright scarlet
-void applyPrincipalColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
-    colorName.toLowerCase();  // Case-insensitive comparison
-    if (colorName == "green") { r = 0; g = 255; b = 00; }
-    else if (colorName == "blue") { r = 00; g = 00; b = 255; }
-    else if (colorName == "purple" || colorName == "pink") { r = 100; g = 0; b = 255; }
-    else if (colorName == "red") { r = 255; g = 0; b = 0; }
-    else if (colorName == "yellow") { r = 255; g = 255; b = 100; }  // Add yellow support
-    else if (colorName == "white") { r = 255; g = 255; b = 255; }  // Add white support
-    //if unkow, print  color rgb
-    else {
-        Serial.print("Unknown color: ");
-        Serial.print(r);
-        Serial.print(", ");
-        Serial.print(g);
-        Serial.print(", ");
-        Serial.println(b);
+// Green	(0, 255, 0)	Neon green
+// Blue	(0, 0, 255)	pure blue
+// Purple	(100, 0, 255)	Vivid violet
+// Red	(255, 0, 0)	Bright scarlet
+void applyPrincipalColors(HoldColor color, uint8_t& r, uint8_t& g, uint8_t& b) {
+    switch (color) {
+        case COLOR_GREEN:  r = 0;   g = 255; b = 0;   break;
+        case COLOR_BLUE:   r = 0;   g = 0;   b = 255; break;
+        case COLOR_PINK:   r = 100; g = 0;   b = 255; break;
+        case COLOR_RED:    r = 255; g = 0;   b = 0;   break;
+        case COLOR_YELLOW: r = 255; g = 255; b = 100; break;
+        case COLOR_WHITE:  r = 255; g = 255; b = 255; break;
+        default:
+            Serial.print("Unknown color: ");
+            Serial.print(r); Serial.print(", ");
+            Serial.print(g); Serial.print(", ");
+            Serial.println(b);
+            break;
     }
 }
 
 // Helper function to apply alternative colors (Route 2)
-// Green	to (100, 255, 0)	#64FF00	Lime chartreuse
-// Blue	to (0, 200, 255)	#00C8FF	Cyan-blue glow
-// Purple	to (255, 0, 100)	#FF00C8	Hot magenta
-// Red	to (255, 100, 0)	#FF6400	Vivid orange-red
-void applyAltColors(String colorName, uint8_t& r, uint8_t& g, uint8_t& b) {
-    colorName.toLowerCase();  // Case-insensitive comparison
-    if (colorName == "green") { r = 40; g = 255; b = 80; }
-    else if (colorName == "blue") { r = 0; g = 220; b = 255; }
-    else if (colorName == "purple" || colorName == "pink") { r = 225; g = 255; b = 255; }
-    else if (colorName == "red") { r = 250; g = 150; b = 0; }
-    else if (colorName == "yellow") { r = 220; g = 100; b = 100; }  // Add yellow support
-    else if (colorName == "white") { r = 200; g = 200; b = 180; }  // Add white support
-    // If unknown color, keep original values
+// Green	to (40, 255, 80)	Lime chartreuse
+// Blue	to (0, 220, 255)	Cyan-blue glow
+// Purple	to (225, 255, 255)	Hot magenta
+// Red	to (250, 150, 0)	Vivid orange-red
+void applyAltColors(HoldColor color, uint8_t& r, uint8_t& g, uint8_t& b) {
+    switch (color) {
+        case COLOR_GREEN:  r = 40;  g = 255; b = 80;  break;
+        case COLOR_BLUE:   r = 0;   g = 220; b = 255; break;
+        case COLOR_PINK:   r = 225; g = 255; b = 255; break;
+        case COLOR_RED:    r = 250; g = 150; b = 0;   break;
+        case COLOR_YELLOW: r = 220; g = 100; b = 100; break;
+        case COLOR_WHITE:  r = 200; g = 200; b = 180; break;
+        default: break; // keep original values
+    }
 }
 
 // Helper: recompute overlapping holds between route1 and route2 for animation
@@ -183,16 +195,34 @@ void updateOverlapState() {
         return;
     }
 
+    // Build a position lookup from route1 for O(n+m) instead of O(n*m)
+    static bool route1PosPresent[NUM_LEDS];
+    memset(route1PosPresent, 0, sizeof(route1PosPresent));
+
     for (const Hold& h1 : route1Holds) {
-        for (const Hold& h2 : route2Holds) {
-            if (h1.position == h2.position && h1.position < NUM_LEDS) {
-                OverlapInfo info;
-                info.position = h1.position;
-                info.colorRoute1 = CRGB(h1.r, h1.g, h1.b);
-                info.colorRoute2 = CRGB(h2.r, h2.g, h2.b);
-                overlappingHolds.push_back(info);
-                break;  // assume at most one entry per position per route
+        if (h1.position < NUM_LEDS) {
+            route1PosPresent[h1.position] = true;
+        }
+    }
+
+    // Find overlapping holds and pre-compute route2-only holds
+    route2OnlyHolds.clear();
+    for (const Hold& h2 : route2Holds) {
+        if (h2.position >= NUM_LEDS) continue;
+        if (route1PosPresent[h2.position]) {
+            // Overlapping — find route1's color for this position
+            for (const Hold& h1 : route1Holds) {
+                if (h1.position == h2.position) {
+                    OverlapInfo info;
+                    info.position = h1.position;
+                    info.colorRoute1 = CRGB(h1.r, h1.g, h1.b);
+                    info.colorRoute2 = CRGB(h2.r, h2.g, h2.b);
+                    overlappingHolds.push_back(info);
+                    break;
+                }
             }
+        } else {
+            route2OnlyHolds.push_back(h2);
         }
     }
 
@@ -206,18 +236,10 @@ void updateOverlapState() {
 CRGB blendColors(const CRGB& c1, const CRGB& c2, float t) {
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
-    uint8_t r = static_cast<uint8_t>(c1.r + (c2.r - c1.r) * t);
-    uint8_t g = static_cast<uint8_t>(c1.g + (c2.g - c1.g) * t);
-    uint8_t b = static_cast<uint8_t>(c1.b + (c2.b - c1.b) * t);
+    uint8_t r = static_cast<uint8_t>(c1.r + (int16_t)(c2.r - c1.r) * t);
+    uint8_t g = static_cast<uint8_t>(c1.g + (int16_t)(c2.g - c1.g) * t);
+    uint8_t b = static_cast<uint8_t>(c1.b + (int16_t)(c2.b - c1.b) * t);
     return CRGB(r, g, b);
-}
-
-// Helper to check if a given position is present in route1
-bool positionInRoute1(uint16_t pos) {
-    for (const Hold& h : route1Holds) {
-        if (h.position == pos) return true;
-    }
-    return false;
 }
 
 //combines both route data into one vector, where data are overlapping (eg route 1 and 2 both have a hold at position 100),
@@ -290,9 +312,9 @@ void updateBoardState() {
                 }
             }
 
-            // Then draw route2-only holds (non-overlapping and not present in route1) - interrupts enabled
-            for (const Hold& h2 : route2Holds) {
-                if (h2.position < NUM_LEDS && !positionInRoute1(h2.position)) {
+            // Then draw route2-only holds (pre-computed, no per-frame lookup needed)
+            for (const Hold& h2 : route2OnlyHolds) {
+                if (h2.position < NUM_LEDS) {
                     leds[h2.position] = CRGB(h2.r, h2.g, h2.b);
                 }
             }
@@ -358,131 +380,67 @@ void mirrorCurrentLane() {
     updateBoardState(); // Update the display after mirroring
 }
 
+// Convert a wavelength (400-700nm) to an RGB CRGB value using piecewise linear approximation
+CRGB wavelengthToRGB(float wavelength) {
+    float r = 0.0f, g = 0.0f, b = 0.0f;
+
+    if (wavelength >= 400 && wavelength < 440) {
+        r = -(wavelength - 440) / (440 - 400);
+        b = 1.0f;
+    } else if (wavelength >= 440 && wavelength < 490) {
+        g = (wavelength - 440) / (490 - 440);
+        b = 1.0f;
+    } else if (wavelength >= 490 && wavelength < 510) {
+        g = 1.0f;
+        b = -(wavelength - 510) / (510 - 490);
+    } else if (wavelength >= 510 && wavelength < 580) {
+        r = (wavelength - 510) / (580 - 510);
+        g = 1.0f;
+    } else if (wavelength >= 580 && wavelength < 645) {
+        r = 1.0f;
+        g = -(wavelength - 645) / (645 - 580);
+    } else if (wavelength >= 645 && wavelength <= 700) {
+        r = 1.0f;
+    }
+
+    return CRGB(
+        static_cast<uint8_t>(constrain(r, 0.0f, 1.0f) * 255),
+        static_cast<uint8_t>(constrain(g, 0.0f, 1.0f) * 255),
+        static_cast<uint8_t>(constrain(b, 0.0f, 1.0f) * 255)
+    );
+}
+
 // on startup, show this sequence
-// smoothly cycles through spectrum colors equivalent to 400nm to 700nm, taking 5 seconds to complete
-// at each time step the entire board is a single color, slowly changing to the next
+// smoothly cycles through spectrum colors equivalent to 400nm to 700nm
 // then reverse it and end on purple
 void startupLEDs() {
-    // Validate NUM_LEDS to prevent buffer overflow
     if (NUM_LEDS <= 0) return;
-    
-    // Calculate number of steps needed for 5 second animation
-    const int totalSteps = 50; 
-    const int delayMs = 5;
-    const float startWavelength = 400.0;
-    const float endWavelength = 700.0;
-    const float wavelengthRange = endWavelength - startWavelength;
-    
-    // Cycle through visible spectrum wavelengths (400nm to 700nm)
-    for (int step = 0; step < totalSteps; step++) {
-        // Convert step to wavelength (400-700nm)
-        float wavelength = startWavelength + (step * wavelengthRange / totalSteps);
-        
-        // Convert wavelength to RGB using approximation
-        float r = 0.0, g = 0.0, b = 0.0;
-        
-        if (wavelength >= 400 && wavelength < 440) {
-            r = -(wavelength - 440) / (440 - 400);
-            g = 0.0;
-            b = 1.0;
-        } else if (wavelength >= 440 && wavelength < 490) {
-            r = 0.0;
-            g = (wavelength - 440) / (490 - 440);
-            b = 1.0;
-        } else if (wavelength >= 490 && wavelength < 510) {
-            r = 0.0;
-            g = 1.0;
-            b = -(wavelength - 510) / (510 - 490);
-        } else if (wavelength >= 510 && wavelength < 580) {
-            r = (wavelength - 510) / (580 - 510);
-            g = 1.0;
-            b = 0.0;
-        } else if (wavelength >= 580 && wavelength < 645) {
-            r = 1.0;
-            g = -(wavelength - 645) / (645 - 580);
-            b = 0.0;
-        } else if (wavelength >= 645 && wavelength <= 700) {
-            r = 1.0;
-            g = 0.0;
-            b = 0.0;
-        }
-        
-        // Ensure RGB values are in valid range [0,1]
-        r = constrain(r, 0.0, 1.0);
-        g = constrain(g, 0.0, 1.0);
-        b = constrain(b, 0.0, 1.0);
-        
-        // Scale RGB values to 0-255 range
-        uint8_t red = r * 255;
-        uint8_t green = g * 255; 
-        uint8_t blue = b * 255;
-        
-        // Set all LEDs to the same color
-        for (int i = 0; i < NUM_LEDS; i++) {
-            leds[i] = CRGB(red, green, blue);
-        }
-        FastLED.show();
-        delay(delayMs);
-    }
-    
-    // Reverse the sequence
-    for (int step = totalSteps - 1; step >= 0; step--) {
-        // Convert step to wavelength (400-700nm)
-        float wavelength = startWavelength + (step * wavelengthRange / totalSteps);
-        
-        // Convert wavelength to RGB using approximation
-        float r = 0.0, g = 0.0, b = 0.0;
-        
-        if (wavelength >= 400 && wavelength < 440) {
-            r = -(wavelength - 440) / (440 - 400);
-            g = 0.0;
-            b = 1.0;
-        } else if (wavelength >= 440 && wavelength < 490) {
-            r = 0.0;
-            g = (wavelength - 440) / (490 - 440);
-            b = 1.0;
-        } else if (wavelength >= 490 && wavelength < 510) {
-            r = 0.0;
-            g = 1.0;
-            b = -(wavelength - 510) / (510 - 490);
-        } else if (wavelength >= 510 && wavelength < 580) {
-            r = (wavelength - 510) / (580 - 510);
-            g = 1.0;
-            b = 0.0;
-        } else if (wavelength >= 580 && wavelength < 645) {
-            r = 1.0;
-            g = -(wavelength - 645) / (645 - 580);
-            b = 0.0;
-        } else if (wavelength >= 645 && wavelength <= 700) {
-            r = 1.0;
-            g = 0.0;
-            b = 0.0;
-        }
-        
-        // Ensure RGB values are in valid range [0,1]
-        r = constrain(r, 0.0, 1.0);
-        g = constrain(g, 0.0, 1.0);
-        b = constrain(b, 0.0, 1.0);
-        
-        // Scale RGB values to 0-255 range
-        uint8_t red = r * 255;
-        uint8_t green = g * 255; 
-        uint8_t blue = b * 255;
-        
-        // Set all LEDs to the same color
-        for (int i = 0; i < NUM_LEDS; i++) {
-            leds[i] = CRGB(red, green, blue);
-        }
-        FastLED.show();
-        delay(delayMs);
-    }
-    
-    // Hold the last color (purple) and stay there, not changin until user says so
-    for (int i = 0; i < NUM_LEDS; i++) {
-        leds[i] = CRGB(128, 0, 128);  // Purple color
-    }
-    FastLED.show();
 
+    const int totalSteps = 50;
+    const int delayMs = 5;
+    const float startWl = 400.0f;
+    const float endWl = 700.0f;
+    const float range = endWl - startWl;
+
+    // Forward sweep: violet → red
+    for (int step = 0; step < totalSteps; step++) {
+        float wl = startWl + (step * range / totalSteps);
+        fill_solid(leds, NUM_LEDS, wavelengthToRGB(wl));
+        FastLED.show();
+        delay(delayMs);
+    }
+
+    // Reverse sweep: red → violet
+    for (int step = totalSteps - 1; step >= 0; step--) {
+        float wl = startWl + (step * range / totalSteps);
+        fill_solid(leds, NUM_LEDS, wavelengthToRGB(wl));
+        FastLED.show();
+        delay(delayMs);
+    }
+
+    // Hold purple
+    fill_solid(leds, NUM_LEDS, CRGB(128, 0, 128));
+    FastLED.show();
 }
 
 
@@ -607,13 +565,13 @@ void onBLEDisconnected(BLEDevice central) {
 
 // State management for climbing routes
 std::vector<Hold> tempHolds;         // Temporary storage for incoming route
-bool activeRoute = true;             // Always present, used only in dual mode
 bool isNewClimb = true;              // Flag to track if this is a new climb sequence
 // Packet buffer for direct BLE Aurora packets (phone -> R4)
 std::vector<uint8_t> packetBufferBLE;   // Buffer for incomplete BLE packets
 
 // UART route protocol from ESP32 (pre-parsed route 2)
-// Frame: [0xAA][0x55][count][(posL,posH,colorByte) * count]
+// Frame: [0xAA][0x55][count][(posL,posH,colorByte) * count][checksum]
+// checksum = XOR of count byte and all payload bytes
 #define UART_ROUTE_HEADER_1 0xAA
 #define UART_ROUTE_HEADER_2 0x55
 
@@ -621,7 +579,8 @@ enum UartRouteState {
     UART_WAIT_HEADER1,
     UART_WAIT_HEADER2,
     UART_WAIT_COUNT,
-    UART_READ_PAYLOAD
+    UART_READ_PAYLOAD,
+    UART_WAIT_CHECKSUM
 };
 
 UartRouteState uartRouteState = UART_WAIT_HEADER1;
@@ -727,10 +686,10 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                     // Decode compressed RGB color from single byte
                     uint8_t r, g, b;
                     decodeColor(packetBufferBLE[i+2], r, g, b);
-                    String colorName = getColorName(r, g, b);
-                    
+                    HoldColor color = classifyColor(r, g, b);
+
                     // Create hold with original decoded colors
-                    Hold h = {position, r, g, b, colorName};
+                    Hold h = {position, r, g, b, color};
                     tempHolds.push_back(h);
                 }
             }
@@ -744,7 +703,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                         route1Holds = tempHolds;
                         // Apply principal colors to the stored route
                         for (Hold& h : route1Holds) {
-                            applyPrincipalColors(h.colorName, h.r, h.g, h.b);
+                            applyPrincipalColors(h.color, h.r, h.g, h.b);
                         }
                         Serial.println("Route 1 received");
                     } else if (currentLane == 1) {
@@ -753,7 +712,7 @@ void onDataTransferCharacteristicWritten(BLEDevice central, BLECharacteristic ch
                         route2Holds = tempHolds;
                         // Apply alternative colors to the stored route
                         for (Hold& h : route2Holds) {
-                            applyAltColors(h.colorName, h.r, h.g, h.b);
+                            applyAltColors(h.color, h.r, h.g, h.b);
                         }
                         Serial.println("Route 2 received");
                     }
@@ -855,54 +814,68 @@ void pollESP32RouteUART() {
             case UART_READ_PAYLOAD:
                 uartRoutePayload.push_back(b);
                 if (uartRoutePayload.size() >= uartRouteExpectedBytes) {
-                    // We have a full route2 payload from ESP32
-                    route2Holds.clear();
-
-                    for (uint8_t i = 0; i < uartRouteCount; i++) {
-                        size_t idx = static_cast<size_t>(i) * 3;
-                        uint16_t position = static_cast<uint16_t>(uartRoutePayload[idx]) |
-                                            (static_cast<uint16_t>(uartRoutePayload[idx + 1]) << 8);
-                        uint8_t colorByte = uartRoutePayload[idx + 2];
-
-                        uint8_t r, g, bColor;
-                        decodeColor(colorByte, r, g, bColor);
-                        String colorName = getColorName(r, g, bColor);
-
-                        Hold h = {position, r, g, bColor, colorName};
-                        route2Holds.push_back(h);
-                    }
-
-                    // Apply alternate color mapping for route 2
-                    for (Hold& h : route2Holds) {
-                        applyAltColors(h.colorName, h.r, h.g, h.b);
-                    }
-
-                    Serial.println("[UART] Route 2 received from ESP32");
-                    // Verbose debug output commented out to prevent timing issues
-                    // Serial.print("[UART] route2Holds size = ");
-                    // Serial.println(route2Holds.size());
-                    // for (const Hold& h : route2Holds) {
-                    //     Serial.print("  Position "); Serial.print(h.position);
-                    //     Serial.print(": "); Serial.println(h.colorName);
-                    // }
-
-                    // Update overlap state and timeout timestamp for UART-delivered route2
-                    updateOverlapState();
-                    lastRouteUpdateMillis = millis();
-                    pendingLEDUpdate = true;  // ← Set flag instead of calling updateBoardState() directly
-
-                    // Reset state machine for next frame
-                    uartRouteState = UART_WAIT_HEADER1;
-                    uartRoutePayload.clear();
+                    // Payload complete, wait for checksum byte
+                    uartRouteState = UART_WAIT_CHECKSUM;
                 }
                 break;
+
+            case UART_WAIT_CHECKSUM: {
+                // Validate checksum: XOR of count + all payload bytes
+                uint8_t expected = uartRouteCount;
+                for (uint8_t byte : uartRoutePayload) {
+                    expected ^= byte;
+                }
+                if (b != expected) {
+                    Serial.print("[UART] Checksum mismatch: got 0x");
+                    Serial.print(b, HEX);
+                    Serial.print(" expected 0x");
+                    Serial.println(expected, HEX);
+                    uartRouteState = UART_WAIT_HEADER1;
+                    uartRoutePayload.clear();
+                    break;
+                }
+
+                // Checksum valid — commit route2
+                route2Holds.clear();
+
+                for (uint8_t i = 0; i < uartRouteCount; i++) {
+                    size_t idx = static_cast<size_t>(i) * 3;
+                    uint16_t position = static_cast<uint16_t>(uartRoutePayload[idx]) |
+                                        (static_cast<uint16_t>(uartRoutePayload[idx + 1]) << 8);
+                    uint8_t colorByte = uartRoutePayload[idx + 2];
+
+                    uint8_t r, g, bColor;
+                    decodeColor(colorByte, r, g, bColor);
+                    HoldColor color = classifyColor(r, g, bColor);
+
+                    Hold h = {position, r, g, bColor, color};
+                    route2Holds.push_back(h);
+                }
+
+                // Apply alternate color mapping for route 2
+                for (Hold& h : route2Holds) {
+                    applyAltColors(h.color, h.r, h.g, h.b);
+                }
+
+                Serial.println("[UART] Route 2 received from ESP32 (checksum OK)");
+
+                // Update overlap state and timeout timestamp for UART-delivered route2
+                updateOverlapState();
+                lastRouteUpdateMillis = millis();
+                pendingLEDUpdate = true;
+
+                // Reset state machine for next frame
+                uartRouteState = UART_WAIT_HEADER1;
+                uartRoutePayload.clear();
+                break;
+            }
         }
     }
 }
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial);  // Wait for serial port to connect
+  { unsigned long t0 = millis(); while (!Serial && millis() - t0 < 3000); }  // Wait up to 3s for serial
 
   // Hardware UART1 for ESP32 link (pins depend on board; on UNO R4 WiFi:
   // Serial1 RX/TX are exposed on the UART header; wire to ESP32 TX2/RX2).
@@ -966,10 +939,16 @@ void setup() {
 
 void checkIRRemote() {
     if (IrReceiver.decode()) {
+        // Ignore NEC repeat frames to prevent double-firing on a single press
+        if (IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT) {
+            IrReceiver.resume();
+            return;
+        }
+
         // Mark IR as recently active to pause animations
         irRecentlyActive = true;
         lastIRCheckMillis = millis();
-        
+
         Serial.print("Protocol: ");
         Serial.print(IrReceiver.decodedIRData.protocol);
         Serial.print(" Address: 0x");
@@ -997,6 +976,7 @@ void checkIRRemote() {
                 Serial.print(currentLane);
                 Serial.println(" to lane 1");
                 currentLane = 1;
+                lastRouteUpdateMillis = millis();  // Reset timeout for manual switch
                 // Provide visual feedback by refreshing display
                 updateBoardState();
             }
@@ -1066,29 +1046,31 @@ void loop() {
   // Poll ESP32 UART link for any pending pre-parsed route 2 updates
     pollESP32RouteUART();
 
+  unsigned long now = millis();
+
   // Lane timeout: when alt lane (1) is selected, switch back to primary
   // lane after 15s without any new route data. Does not clear route2.
+  // Fires once, then disarms until the next route update or manual lane switch.
   if (currentLane == 1 && lastRouteUpdateMillis != 0) {
-    unsigned long now = millis();
     if (now - lastRouteUpdateMillis > 15000UL) {
       Serial.println("[TIMEOUT] No new routes on lane 1 for 15s; switching back to lane 0");
       currentLane = 0;
-      // Do not modify route2Holds or visibility flags
+      lastRouteUpdateMillis = 0;  // Disarm so it doesn't fire every loop
     }
   }
 
-  // Ensure BLE is always advertising for quick device switching
-  if (!deviceConnected) {
-    BLE.advertise();
-    // Optional: Serial.println("Ensuring BLE advertising (loop watchdog)");
+  // Ensure BLE is always advertising for quick device switching (throttled)
+  {
+    static unsigned long lastAdvMillis = 0;
+    if (!deviceConnected && (now - lastAdvMillis > 3000UL)) {
+      BLE.advertise();
+      lastAdvMillis = now;
+    }
   }
 
   // CRITICAL: Check IR multiple times before animation to improve responsiveness
   // IR decoding requires precise timing and can miss signals if FastLED.show() blocks
   checkIRRemote();
-  
-  // Check if IR cooldown period has elapsed
-  unsigned long now = millis();
   if (irRecentlyActive && (now - lastIRCheckMillis > IR_COOLDOWN_MS)) {
     irRecentlyActive = false;
   }

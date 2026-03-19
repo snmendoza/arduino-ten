@@ -74,10 +74,11 @@ uint8_t calculateChecksum(const std::vector<uint8_t>& data) {
 
 // Send a fully parsed route over UART to the R4.
 // Frame format:
-//   [0xAA][0x55][count][(posL,posH,colorByte) * count]
+//   [0xAA][0x55][count][(posL,posH,colorByte) * count][checksum]
 //   - count: number of holds (0–255)
 //   - position: little-endian uint16
 //   - colorByte: original Aurora 8-bit color encoding
+//   - checksum: XOR of count byte and all payload bytes
 void sendRouteOverUART(const std::vector<AuroraHold>& route) {
   if (route.empty()) {
     Serial.println("UART: route empty, nothing to send");
@@ -89,28 +90,36 @@ void sendRouteOverUART(const std::vector<AuroraHold>& route) {
   Serial.print("UART: sending route with ");
   Serial.print(count);
   Serial.println(" holds to R4");
-  
+
   // Send header
   Serial2.write(0xAA);
   Serial2.write(0x55);
   Serial2.write(count);
-  
-  // Send hold data
+
+  // Send hold data and compute checksum
+  uint8_t checksum = count;
   for (uint8_t i = 0; i < count; i++) {
     uint16_t pos = route[i].position;
     uint8_t colorByte = route[i].colorByte;
-    Serial2.write((uint8_t)(pos & 0xFF));        // low
-    Serial2.write((uint8_t)((pos >> 8) & 0xFF)); // high
+    uint8_t posL = (uint8_t)(pos & 0xFF);
+    uint8_t posH = (uint8_t)((pos >> 8) & 0xFF);
+    Serial2.write(posL);
+    Serial2.write(posH);
     Serial2.write(colorByte);
+    checksum ^= posL;
+    checksum ^= posH;
+    checksum ^= colorByte;
   }
+  Serial2.write(checksum);
   Serial2.flush();
-  
+
   // Debug: print what we sent
   Serial.print("UART: sent header [0xAA 0x55 ");
   Serial.print(count);
   Serial.print("] + ");
   Serial.print(count * 3);
-  Serial.println(" bytes of hold data");
+  Serial.print(" bytes + checksum 0x");
+  Serial.println(checksum, HEX);
 }
 
 // UART loopback self-test function
@@ -119,11 +128,13 @@ void sendRouteOverUART(const std::vector<AuroraHold>& route) {
 void uartLoopbackTest() {
   Serial.println("\n=== UART LOOPBACK TEST ===");
   
-  // Test data: header + 2 test holds
+  // Test data: header + 2 test holds + checksum
+  // checksum = 0x02 ^ 0x64 ^ 0x00 ^ 0xFF ^ 0xC8 ^ 0x00 ^ 0xAA = 0xFB
   uint8_t testData[] = {
     0xAA, 0x55, 0x02,  // Header: 0xAA, 0x55, count=2
     0x64, 0x00, 0xFF,  // Hold 1: position=100 (0x0064), color=0xFF
-    0xC8, 0x00, 0xAA   // Hold 2: position=200 (0x00C8), color=0xAA
+    0xC8, 0x00, 0xAA,  // Hold 2: position=200 (0x00C8), color=0xAA
+    0xFB                // Checksum: XOR of count + all payload bytes
   };
   const size_t testDataLen = sizeof(testData);
   
