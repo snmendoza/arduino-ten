@@ -1,1 +1,13 @@
+# macOS
+.DS_Store
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Generated outputs
+validated_*.jpg
+
+# Processing build artifacts
 fakeAuroraBoard_processing/windows-amd64
