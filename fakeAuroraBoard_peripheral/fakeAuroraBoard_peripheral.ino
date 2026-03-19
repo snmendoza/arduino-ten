@@ -239,7 +239,7 @@ void uartLoopbackTest() {
 // the R4 over UART using sendRouteOverUART().
 class RxCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* characteristic) override {
-    String value = characteristic->getValue();
+    std::string value = characteristic->getValue();
     int len = value.length();
     if (len == 0) return;
 

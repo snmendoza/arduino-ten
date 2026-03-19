@@ -23,7 +23,6 @@
  */
 
 #include <ArduinoBLE.h>
-#include <Wire.h>
 #include <vector>
 #define FASTLED_ALLOW_INTERRUPTS 0
 #include <FastLED.h>
